@@ -1,6 +1,8 @@
 #include "inkview.h"
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 // Application state
 static bool isConnected = false;
@@ -9,18 +11,22 @@ static char statusText[512] = "Ожидание подключения к Calibr
 // System dialog path
 static const char* DIALOG_PATH = "/ebrmain/bin/dialog";
 
-// Dialog icons
-enum DialogIcon {
-    ICON_NONE = 0,
-    ICON_INFO = 1,
-    ICON_QUESTION = 2,
-    ICON_ATTENTION = 3,
-    ICON_ERROR = 4,
-    ICON_WLAN = 5
+// Dialog icons (using different names to avoid conflicts with inkview.h)
+enum PBDialogIcon {
+    PB_ICON_NONE = 0,
+    PB_ICON_INFO = 1,
+    PB_ICON_QUESTION = 2,
+    PB_ICON_ATTENTION = 3,
+    PB_ICON_ERROR = 4,
+    PB_ICON_WLAN = 5
 };
 
+// Forward declarations
+void showMainMenu();
+void showSettingsMenu();
+
 // Show system dialog
-int showDialog(DialogIcon icon, const char* text, const char* buttons[], int buttonCount) {
+int showDialog(PBDialogIcon icon, const char* text, const char* buttons[], int buttonCount) {
     // Build command arguments
     char iconStr[8];
     snprintf(iconStr, sizeof(iconStr), "%d", icon);
@@ -66,7 +72,7 @@ void showMainMenu() {
         statusText
     );
     
-    int result = showDialog(ICON_INFO, menuText, buttons, 3);
+    int result = showDialog(PB_ICON_INFO, menuText, buttons, 3);
     
     switch (result) {
         case 1:  // Выход
@@ -90,7 +96,7 @@ void showSettingsMenu() {
     const char* buttons[] = { "Назад", "IP адрес", "Порт" };
     
     int result = showDialog(
-        ICON_NONE,
+        PB_ICON_NONE,
         "Настройки подключения\n\n"
         "IP адрес: 192.168.1.100\n"
         "Порт: 8080\n\n"
@@ -115,7 +121,7 @@ void showInitialDialog() {
     const char* buttons[] = { "Отмена", "Продолжить" };
     
     int result = showDialog(
-        ICON_QUESTION,
+        PB_ICON_QUESTION,
         "Pocketbook Companion\n\n"
         "Это приложение позволяет синхронизировать\n"
         "вашу библиотеку с Calibre.\n\n"
