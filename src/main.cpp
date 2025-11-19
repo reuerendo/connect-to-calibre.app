@@ -301,12 +301,6 @@ void handleSettingsKey(int key) {
 // Event handler for settings screen
 static int settingsEventHandler(int type, int par1, int par2) {
     switch (type) {
-        case EVT_INIT:
-            loadSettings();
-            initFields();
-            drawSettings();
-            break;
-            
         case EVT_SHOW:
             drawSettings();
             break;
@@ -418,8 +412,11 @@ void showMainMenu() {
 
 // Show settings screen
 void showSettingsScreen() {
+    ClearScreen();
     SetEventHandler(settingsEventHandler);
-    SendEvent(GetEventHandler(), EVT_SHOW, 0, 0);
+    loadSettings();
+    initFields();
+    drawSettings();
 }
 
 // ============================================================================
