@@ -97,60 +97,25 @@ void showMainMenu() {
 // Show settings menu
 void showSettingsMenu() {
     // Input IP
-    char* newIP = OpenKeyboard("IP адрес", settingsIP, 63, KBD_NORMAL);
-    if (newIP == NULL) {
-        showMainMenu();
-        return;
-    }
-    strncpy(settingsIP, newIP, sizeof(settingsIP) - 1);
+    OpenKeyboard("IP адрес", settingsIP, 63, KBD_NORMAL, NULL);
     
     // Input Port
-    char* newPort = OpenKeyboard("Порт", settingsPort, 15, KBD_NORMAL);
-    if (newPort == NULL) {
-        showMainMenu();
-        return;
-    }
-    strncpy(settingsPort, newPort, sizeof(settingsPort) - 1);
+    OpenKeyboard("Порт", settingsPort, 15, KBD_NORMAL, NULL);
     
     // Input Password
-    char* newPassword = OpenKeyboard("Пароль", settingsPassword, 63, KBD_PASSWORD);
-    if (newPassword == NULL) {
-        showMainMenu();
-        return;
-    }
-    strncpy(settingsPassword, newPassword, sizeof(settingsPassword) - 1);
+    OpenKeyboard("Пароль", settingsPassword, 63, KBD_PASSWORD, NULL);
     
     // Input Read column
-    char* newReadColumn = OpenKeyboard("Read column", settingsReadColumn, 63, KBD_NORMAL);
-    if (newReadColumn == NULL) {
-        showMainMenu();
-        return;
-    }
-    strncpy(settingsReadColumn, newReadColumn, sizeof(settingsReadColumn) - 1);
+    OpenKeyboard("Read column", settingsReadColumn, 63, KBD_NORMAL, NULL);
     
     // Input Read date column
-    char* newReadDateColumn = OpenKeyboard("Read date column", settingsReadDateColumn, 63, KBD_NORMAL);
-    if (newReadDateColumn == NULL) {
-        showMainMenu();
-        return;
-    }
-    strncpy(settingsReadDateColumn, newReadDateColumn, sizeof(settingsReadDateColumn) - 1);
+    OpenKeyboard("Read date column", settingsReadDateColumn, 63, KBD_NORMAL, NULL);
     
     // Input Favorite column
-    char* newFavoriteColumn = OpenKeyboard("Favorite column", settingsFavoriteColumn, 63, KBD_NORMAL);
-    if (newFavoriteColumn == NULL) {
-        showMainMenu();
-        return;
-    }
-    strncpy(settingsFavoriteColumn, newFavoriteColumn, sizeof(settingsFavoriteColumn) - 1);
+    OpenKeyboard("Favorite column", settingsFavoriteColumn, 63, KBD_NORMAL, NULL);
     
     // Input folder
-    char* newInputFolder = OpenKeyboard("Input folder", settingsInputFolder, 255, KBD_NORMAL);
-    if (newInputFolder == NULL) {
-        showMainMenu();
-        return;
-    }
-    strncpy(settingsInputFolder, newInputFolder, sizeof(settingsInputFolder) - 1);
+    OpenKeyboard("Input folder", settingsInputFolder, 255, KBD_NORMAL, NULL);
     
     // Show confirmation dialog
     const char* buttons[] = { "Сохранить" };
