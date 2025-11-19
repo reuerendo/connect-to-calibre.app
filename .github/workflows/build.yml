@@ -20,13 +20,20 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake build-essential git
+        sudo apt-get install -y cmake build-essential git libmpfr-dev libgmp-dev libmpc-dev
     
     - name: Clone PocketBook SDK
       run: |
         mkdir -p SDK
         cd SDK
         git clone --depth 1 --branch 5.19 https://github.com/pocketbook/SDK_6.3.0.git
+    
+    - name: Setup SDK environment
+      run: |
+        # Create symlinks for required libraries
+        sudo ln -sf /usr/lib/x86_64-linux-gnu/libmpfr.so.6 /usr/lib/x86_64-linux-gnu/libmpfr.so.4 || true
+        sudo ln -sf /usr/lib/x86_64-linux-gnu/libgmp.so.10 /usr/lib/x86_64-linux-gnu/libgmp.so.3 || true
+        sudo ldconfig
     
     - name: Create build directory
       run: mkdir -p build
