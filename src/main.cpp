@@ -138,7 +138,7 @@ void folderCallback(char *path) {
 // ============================================================================
 
 void settingsMenuHandler(int index) {
-    CloseMenu();
+    // Menu closes automatically when handler is called
     
     if (currentMenu) {
         for (int i = 0; i < FIELD_COUNT; i++) {
@@ -151,19 +151,19 @@ void settingsMenuHandler(int index) {
     }
     
     if (index == -1) {
-        // Отмена
+        // Cancel
         showMainMenu();
         return;
     }
     
     if (index == 1000) {
-        // Сохранить
+        // Save
         saveSettings();
         showMainMenu();
         return;
     }
     
-    // Редактирование поля
+    // Edit field
     if (index >= 0 && index < FIELD_COUNT) {
         currentField = index;
         
@@ -187,7 +187,7 @@ void showSettingsPanel() {
     currentMenu = (imenu*)calloc(FIELD_COUNT + 2, sizeof(imenu));
     int menuIndex = 0;
     
-    // Добавляем поля настроек
+    // Add settings fields
     for (int i = 0; i < FIELD_COUNT; i++) {
         char buffer[512];
         
@@ -209,12 +209,12 @@ void showSettingsPanel() {
         menuIndex++;
     }
     
-    // Разделитель
+    // Separator
     currentMenu[menuIndex].type = ITEM_SEPARATOR;
     currentMenu[menuIndex].text = NULL;
     menuIndex++;
     
-    // Кнопка "Сохранить"
+    // Save button
     currentMenu[menuIndex].type = ITEM_ACTIVE;
     currentMenu[menuIndex].text = (char*)"Сохранить";
     currentMenu[menuIndex].index = 1000;
@@ -230,7 +230,7 @@ void showSettingsPanel() {
 static bool isConnected = false;
 
 void mainMenuHandler(int index) {
-    CloseMenu();
+    // Menu closes automatically when handler is called
     
     if (currentMenu) {
         free(currentMenu);
@@ -239,23 +239,23 @@ void mainMenuHandler(int index) {
     
     switch (index) {
         case 1:
-            // Синхронизация
+            // Sync
             Message(ICON_INFORMATION, "Синхронизация", "Функция в разработке", 1500);
             showMainMenu();
             break;
             
         case 2:
-            // Настройки
+            // Settings
             showSettingsPanel();
             break;
             
         case 3:
-            // Выход
+            // Exit
             CloseApp();
             break;
             
         default:
-            // Отмена
+            // Cancel
             CloseApp();
             break;
     }
@@ -265,7 +265,7 @@ void showMainMenu() {
     currentMenu = (imenu*)calloc(4, sizeof(imenu));
     int menuIndex = 0;
     
-    // Заголовок
+    // Header
     char statusText[512];
     snprintf(statusText, sizeof(statusText), 
         "Pocketbook Companion\n\nСтатус: %s", 
@@ -275,19 +275,19 @@ void showMainMenu() {
     currentMenu[menuIndex].text = statusText;
     menuIndex++;
     
-    // Синхронизация
+    // Sync
     currentMenu[menuIndex].type = ITEM_ACTIVE;
     currentMenu[menuIndex].text = (char*)"Синхронизация";
     currentMenu[menuIndex].index = 1;
     menuIndex++;
     
-    // Настройки
+    // Settings
     currentMenu[menuIndex].type = ITEM_ACTIVE;
     currentMenu[menuIndex].text = (char*)"Настройки";
     currentMenu[menuIndex].index = 2;
     menuIndex++;
     
-    // Выход
+    // Exit
     currentMenu[menuIndex].type = ITEM_ACTIVE;
     currentMenu[menuIndex].text = (char*)"Выход";
     currentMenu[menuIndex].index = 3;
