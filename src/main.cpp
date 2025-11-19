@@ -26,59 +26,17 @@ static char readDateColumnText[128];
 static char favoriteColumnText[128];
 static char inputFolderText[300];
 
-// System dialog path
-static const char* DIALOG_PATH = "/ebrmain/bin/dialog";
-
-// Dialog icons (using different names to avoid conflicts with inkview.h)
-enum PBDialogIcon {
-    PB_ICON_NONE = 0,
-    PB_ICON_INFO = 1,
-    PB_ICON_QUESTION = 2,
-    PB_ICON_ATTENTION = 3,
-    PB_ICON_ERROR = 4,
-    PB_ICON_WLAN = 5
-};
+// Current selected menu index
+static int currentMenuIndex = 0;
 
 // Forward declarations
 void showMainMenu();
 void showSettingsMenu();
-
-// Show system dialog
-int showDialog(PBDialogIcon icon, const char* text, const char* buttons[], int buttonCount) {
-    // Build command arguments
-    char iconStr[8];
-    snprintf(iconStr, sizeof(iconStr), "%d", icon);
-    
-    // Allocate arguments array
-    char** args = (char**)malloc(sizeof(char*) * (buttonCount + 4));
-    args[0] = (char*)DIALOG_PATH;
-    args[1] = iconStr;
-    args[2] = (char*)"";  // title (empty)
-    args[3] = (char*)text;
-    
-    for (int i = 0; i < buttonCount; i++) {
-        args[4 + i] = (char*)buttons[i];
-    }
-    args[4 + buttonCount] = NULL;
-    
-    // Execute dialog
-    int pid = fork();
-    if (pid == 0) {
-        execv(DIALOG_PATH, args);
-        exit(-1);
-    }
-    
-    int status = 0;
-    if (pid > 0) {
-        waitpid(pid, &status, 0);
-    }
-    
-    free(args);
-    return WEXITSTATUS(status);
-}
+int mainHandler(int type, int par1, int par2);
 
 // Settings menu items
 static imenu settingsMenuItems[] = {
+    { ITEM_HEADER, 0, (char*)"Настройки", NULL },
     { ITEM_ACTIVE, 0, ipText, NULL },
     { ITEM_ACTIVE, 1, portText, NULL },
     { ITEM_ACTIVE, 2, passwordText, NULL },
@@ -154,9 +112,10 @@ static void inputFolderKeyboardHandler(char* text) {
 
 // Settings menu item handler
 static void settingsMenuHandler(int index) {
+    currentMenuIndex = index;
+    
     if (index == -1) {
         // Back button pressed
-        showMainMenu();
         return;
     }
     
@@ -191,22 +150,18 @@ static void settingsMenuHandler(int index) {
     }
 }
 
-// Show main menu
-void showMainMenu() {
-    const char* buttons[] = { "Настройки", "Выход" };
-    
-    char menuText[1024];
-    snprintf(menuText, sizeof(menuText),
-        "Pocketbook Companion\n\n"
-        "Статус: %s\n\n"
-        "%s",
-        isConnected ? "Подключено" : "Не подключено",
-        statusText
-    );
-    
-    int result = showDialog(PB_ICON_INFO, menuText, buttons, 2);
-    
-    switch (result) {
+// Main menu items
+static imenu mainMenuItems[] = {
+    { ITEM_HEADER, 0, (char*)"Pocketbook Companion", NULL },
+    { ITEM_ACTIVE, 1, (char*)"Настройки", NULL },
+    { ITEM_SEPARATOR, 0, NULL, NULL },
+    { ITEM_ACTIVE, 2, (char*)"Выход", NULL },
+    { 0, 0, NULL, NULL }
+};
+
+// Main menu handler
+static void mainMenuHandler(int index) {
+    switch (index) {
         case 1:  // Настройки
             showSettingsMenu();
             break;
@@ -230,15 +185,39 @@ void showSettingsMenu() {
     snprintf(inputFolderText, sizeof(inputFolderText), "Input folder: %s", settingsInputFolder);
     
     // Show menu at center of screen
-    OpenMenu(settingsMenuItems, 0, ScreenWidth() / 2, ScreenHeight() / 2, settingsMenuHandler);
+    OpenMenu(settingsMenuItems, currentMenuIndex, ScreenWidth() / 2, ScreenHeight() / 2, settingsMenuHandler);
+}
+
+// Show main menu
+void showMainMenu() {
+    OpenMenu(mainMenuItems, 0, ScreenWidth() / 2, ScreenHeight() / 2, mainMenuHandler);
+}
+
+// Main event handler
+int mainHandler(int type, int par1, int par2) {
+    if (type == EVT_INIT) {
+        // Initialize application
+        OpenScreen();
+    }
+    
+    if (type == EVT_SHOW) {
+        // Clear screen and show main menu
+        ClearScreen();
+        FullUpdate();
+        showMainMenu();
+    }
+    
+    if (type == EVT_KEYPRESS) {
+        if (par1 == KEY_BACK) {
+            CloseApp();
+        }
+    }
+    
+    return 0;
 }
 
 // Application entry point
 int main(int argc, char *argv[]) {
-    OpenScreen();
-    
-    // Show main menu directly
-    showMainMenu();
-    
+    InkViewMain(mainHandler);
     return 0;
 }
