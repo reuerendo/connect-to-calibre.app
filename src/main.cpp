@@ -46,6 +46,7 @@ struct FieldInfo {
 
 static FieldInfo fieldInfo[FIELD_COUNT];
 static int currentField = -1;
+static imenu *currentMenu = NULL;
 
 void initFieldInfo() {
     fieldInfo[FIELD_IP] = {"IP адрес:", settings.ip, sizeof(settings.ip), false};
@@ -110,11 +111,16 @@ void saveSettings() {
     }
 }
 
+// Forward declarations
+void showSettingsPanel();
+void showMainMenu();
+
 // Callback для ввода текста
 void keyboardCallback(char *text) {
     if (text && currentField >= 0 && currentField < FIELD_COUNT) {
         strncpy(fieldInfo[currentField].value, text, fieldInfo[currentField].maxLen - 1);
         fieldInfo[currentField].value[fieldInfo[currentField].maxLen - 1] = '\0';
+        showSettingsPanel();
     }
 }
 
@@ -123,6 +129,7 @@ void folderCallback(char *path) {
     if (path && path[0] != '\0') {
         strncpy(settings.inputFolder, path, sizeof(settings.inputFolder) - 1);
         settings.inputFolder[sizeof(settings.inputFolder) - 1] = '\0';
+        showSettingsPanel();
     }
 }
 
@@ -130,8 +137,54 @@ void folderCallback(char *path) {
 // SETTINGS PANEL
 // ============================================================================
 
+void settingsMenuHandler(int index) {
+    CloseMenu();
+    
+    if (currentMenu) {
+        for (int i = 0; i < FIELD_COUNT; i++) {
+            if (currentMenu[i].text) {
+                free((void*)currentMenu[i].text);
+            }
+        }
+        free(currentMenu);
+        currentMenu = NULL;
+    }
+    
+    if (index == -1) {
+        // Отмена
+        showMainMenu();
+        return;
+    }
+    
+    if (index == 1000) {
+        // Сохранить
+        saveSettings();
+        showMainMenu();
+        return;
+    }
+    
+    // Редактирование поля
+    if (index >= 0 && index < FIELD_COUNT) {
+        currentField = index;
+        
+        if (fieldInfo[index].isFolder) {
+            char buffer[256];
+            strncpy(buffer, fieldInfo[index].value, sizeof(buffer) - 1);
+            buffer[sizeof(buffer) - 1] = '\0';
+            OpenDirectorySelector("Выберите папку", buffer, sizeof(buffer), folderCallback);
+        } else {
+            char buffer[256];
+            strncpy(buffer, fieldInfo[index].value, sizeof(buffer) - 1);
+            buffer[sizeof(buffer) - 1] = '\0';
+            
+            int keyboardType = (index == FIELD_PORT) ? KBD_NUMERIC : KBD_NORMAL;
+            OpenKeyboard(fieldInfo[index].label, buffer, fieldInfo[index].maxLen - 1, keyboardType, keyboardCallback);
+        }
+    }
+}
+
 void showSettingsPanel() {
-    imenu settingsMenu[FIELD_COUNT + 2];
+    currentMenu = (imenu*)calloc(FIELD_COUNT + 2, sizeof(imenu));
     int menuIndex = 0;
     
     // Добавляем поля настроек
@@ -139,7 +192,6 @@ void showSettingsPanel() {
         char buffer[512];
         
         if (i == FIELD_PASSWORD && strlen(fieldInfo[i].value) > 0) {
-            // Маскируем пароль
             char masked[128];
             int len = strlen(fieldInfo[i].value);
             for (int j = 0; j < len && j < 127; j++) {
@@ -151,64 +203,24 @@ void showSettingsPanel() {
             snprintf(buffer, sizeof(buffer), "%s %s", fieldInfo[i].label, fieldInfo[i].value);
         }
         
-        settingsMenu[menuIndex].type = ITEM_ACTIVE;
-        settingsMenu[menuIndex].text = strdup(buffer);
-        settingsMenu[menuIndex].index = i;
+        currentMenu[menuIndex].type = ITEM_ACTIVE;
+        currentMenu[menuIndex].text = strdup(buffer);
+        currentMenu[menuIndex].index = i;
         menuIndex++;
     }
     
     // Разделитель
-    settingsMenu[menuIndex].type = ITEM_SEPARATOR;
-    settingsMenu[menuIndex].text = NULL;
+    currentMenu[menuIndex].type = ITEM_SEPARATOR;
+    currentMenu[menuIndex].text = NULL;
     menuIndex++;
     
     // Кнопка "Сохранить"
-    settingsMenu[menuIndex].type = ITEM_ACTIVE;
-    settingsMenu[menuIndex].text = (char*)"Сохранить";
-    settingsMenu[menuIndex].index = 1000;
+    currentMenu[menuIndex].type = ITEM_ACTIVE;
+    currentMenu[menuIndex].text = (char*)"Сохранить";
+    currentMenu[menuIndex].index = 1000;
     menuIndex++;
     
-    int result = OpenMenu(settingsMenu, 0, 0, 0, 0, NULL);
-    
-    // Освобождаем память
-    for (int i = 0; i < FIELD_COUNT; i++) {
-        free((void*)settingsMenu[i].text);
-    }
-    
-    if (result == -1) {
-        // Отмена - ничего не делаем
-        return;
-    }
-    
-    if (result == 1000) {
-        // Сохранить
-        saveSettings();
-        return;
-    }
-    
-    // Редактирование поля
-    if (result >= 0 && result < FIELD_COUNT) {
-        currentField = result;
-        
-        if (fieldInfo[result].isFolder) {
-            // Выбор папки
-            char buffer[256];
-            strncpy(buffer, fieldInfo[result].value, sizeof(buffer) - 1);
-            buffer[sizeof(buffer) - 1] = '\0';
-            OpenDirectorySelector("Выберите папку", buffer, sizeof(buffer), folderCallback);
-        } else {
-            // Ввод текста
-            char buffer[256];
-            strncpy(buffer, fieldInfo[result].value, sizeof(buffer) - 1);
-            buffer[sizeof(buffer) - 1] = '\0';
-            
-            int keyboardType = (result == FIELD_PORT) ? KBD_NUMERIC : KBD_NORMAL;
-            OpenKeyboard(fieldInfo[result].label, buffer, fieldInfo[result].maxLen - 1, keyboardType, keyboardCallback);
-        }
-        
-        // Показываем панель настроек снова после редактирования
-        showSettingsPanel();
-    }
+    OpenMenu(currentMenu, 0, 0, 0, settingsMenuHandler);
 }
 
 // ============================================================================
@@ -217,41 +229,15 @@ void showSettingsPanel() {
 
 static bool isConnected = false;
 
-void showMainMenu() {
-    imenu mainMenu[4];
-    int menuIndex = 0;
+void mainMenuHandler(int index) {
+    CloseMenu();
     
-    // Заголовок
-    char statusText[512];
-    snprintf(statusText, sizeof(statusText), 
-        "Pocketbook Companion\n\nСтатус: %s", 
-        isConnected ? "Подключено" : "Не подключено");
+    if (currentMenu) {
+        free(currentMenu);
+        currentMenu = NULL;
+    }
     
-    mainMenu[menuIndex].type = ITEM_HEADER;
-    mainMenu[menuIndex].text = statusText;
-    menuIndex++;
-    
-    // Синхронизация
-    mainMenu[menuIndex].type = ITEM_ACTIVE;
-    mainMenu[menuIndex].text = (char*)"Синхронизация";
-    mainMenu[menuIndex].index = 1;
-    menuIndex++;
-    
-    // Настройки
-    mainMenu[menuIndex].type = ITEM_ACTIVE;
-    mainMenu[menuIndex].text = (char*)"Настройки";
-    mainMenu[menuIndex].index = 2;
-    menuIndex++;
-    
-    // Выход
-    mainMenu[menuIndex].type = ITEM_ACTIVE;
-    mainMenu[menuIndex].text = (char*)"Выход";
-    mainMenu[menuIndex].index = 3;
-    menuIndex++;
-    
-    int result = OpenMenu(mainMenu, 0, 0, 0, 0, NULL);
-    
-    switch (result) {
+    switch (index) {
         case 1:
             // Синхронизация
             Message(ICON_INFORMATION, "Синхронизация", "Функция в разработке", 1500);
@@ -261,7 +247,6 @@ void showMainMenu() {
         case 2:
             // Настройки
             showSettingsPanel();
-            showMainMenu();
             break;
             
         case 3:
@@ -270,10 +255,45 @@ void showMainMenu() {
             break;
             
         default:
-            // Отмена или закрытие
+            // Отмена
             CloseApp();
             break;
     }
+}
+
+void showMainMenu() {
+    currentMenu = (imenu*)calloc(4, sizeof(imenu));
+    int menuIndex = 0;
+    
+    // Заголовок
+    char statusText[512];
+    snprintf(statusText, sizeof(statusText), 
+        "Pocketbook Companion\n\nСтатус: %s", 
+        isConnected ? "Подключено" : "Не подключено");
+    
+    currentMenu[menuIndex].type = ITEM_HEADER;
+    currentMenu[menuIndex].text = statusText;
+    menuIndex++;
+    
+    // Синхронизация
+    currentMenu[menuIndex].type = ITEM_ACTIVE;
+    currentMenu[menuIndex].text = (char*)"Синхронизация";
+    currentMenu[menuIndex].index = 1;
+    menuIndex++;
+    
+    // Настройки
+    currentMenu[menuIndex].type = ITEM_ACTIVE;
+    currentMenu[menuIndex].text = (char*)"Настройки";
+    currentMenu[menuIndex].index = 2;
+    menuIndex++;
+    
+    // Выход
+    currentMenu[menuIndex].type = ITEM_ACTIVE;
+    currentMenu[menuIndex].text = (char*)"Выход";
+    currentMenu[menuIndex].index = 3;
+    menuIndex++;
+    
+    OpenMenu(currentMenu, 0, 0, 0, mainMenuHandler);
 }
 
 // ============================================================================
