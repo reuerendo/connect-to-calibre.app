@@ -238,27 +238,23 @@ void openKeyboardForField(int fieldIndex) {
     // The callback would update field.value and call drawSettings()
 }
 
-// Select folder using file chooser
-void selectFolder() {
-    // OpenFileDialog returns full file path, extract directory from it
-    char *selectedPath = OpenFileDialog(settings.inputFolder, "epub;pdf;mobi;azw3", 0, NULL);
-    
-    if (selectedPath != NULL) {
-        // Extract directory path
-        char dirPath[256];
-        strncpy(dirPath, selectedPath, sizeof(dirPath) - 1);
-        dirPath[sizeof(dirPath) - 1] = '\0';
-        
-        char *lastSlash = strrchr(dirPath, '/');
-        if (lastSlash != NULL) {
-            *lastSlash = '\0';
-        }
-        
-        strncpy(settings.inputFolder, dirPath, sizeof(settings.inputFolder) - 1);
+// Callback for directory selector
+void dirSelectorHandler(char *path) {
+    if (path != NULL && path[0] != '\0') {
+        strncpy(settings.inputFolder, path, sizeof(settings.inputFolder) - 1);
         settings.inputFolder[sizeof(settings.inputFolder) - 1] = '\0';
-        
         drawSettings();
     }
+}
+
+// Select folder using directory chooser
+void selectFolder() {
+    // Use OpenDirectorySelector with callback
+    char buffer[256];
+    strncpy(buffer, settings.inputFolder, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    
+    OpenDirectorySelector("Выберите папку", buffer, sizeof(buffer), dirSelectorHandler);
 }
 
 // Handle pointer events in settings
