@@ -4,8 +4,12 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+// Define KEY_BACK if not defined in SDK
+#ifndef KEY_BACK
+#define KEY_BACK 23
+#endif
+
 // Application state
-static bool isConnected = false;
 static char statusText[512] = "Ожидание подключения к Calibre...\n\nПриложение готово к работе.";
 
 // Settings
@@ -208,6 +212,7 @@ int mainHandler(int type, int par1, int par2) {
     }
     
     if (type == EVT_KEYPRESS) {
+        // Handle BACK button
         if (par1 == KEY_BACK) {
             CloseApp();
         }
