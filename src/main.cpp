@@ -4,7 +4,37 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <pthread.h>
+
+// Debug logging
+static FILE* logFile = NULL;
+
+void initLog() {
+    logFile = fopen("/tmp/calibre-connect.log", "w");
+    if (logFile) {
+        fprintf(logFile, "=== Calibre Connect Started ===\n");
+        fflush(logFile);
+    }
+}
+
+void logMsg(const char* format, ...) {
+    if (!logFile) return;
+    va_list args;
+    va_start(args, format);
+    vfprintf(logFile, format, args);
+    va_end(args);
+    fprintf(logFile, "\n");
+    fflush(logFile);
+}
+
+void closeLog() {
+    if (logFile) {
+        fprintf(logFile, "=== Calibre Connect Closed ===\n");
+        fclose(logFile);
+        logFile = NULL;
+    }
+}
 
 // Global config
 static iconfig *appConfig = NULL;
@@ -120,6 +150,7 @@ static iconfigedit configItems[] = {
 };
 
 void updateConnectionStatus(const char* status) {
+    logMsg("Status update: %s", status);
     if (appConfig) {
         WriteString(appConfig, KEY_CONNECTION, status);
         SaveConfig(appConfig);
@@ -129,6 +160,7 @@ void updateConnectionStatus(const char* status) {
 }
 
 void* connectionThreadFunc(void* arg) {
+    logMsg("Connection thread started");
     isConnecting = true;
     
     updateConnectionStatus("Connecting...");
@@ -137,31 +169,39 @@ void* connectionThreadFunc(void* arg) {
     int port = ReadInt(appConfig, KEY_PORT, atoi(DEFAULT_PORT));
     const char* password = ReadString(appConfig, KEY_PASSWORD, DEFAULT_PASSWORD);
     
+    logMsg("Connecting to %s:%d", ip, port);
+    
     // Connect to server
     if (!networkManager->connectToServer(ip, port)) {
+        logMsg("Connection failed");
         updateConnectionStatus("Connection failed");
         isConnecting = false;
         return NULL;
     }
     
+    logMsg("Connected, starting handshake");
     updateConnectionStatus("Handshaking...");
     
     // Perform handshake
     if (!protocol->performHandshake(password)) {
+        logMsg("Handshake failed: %s", protocol->getErrorMessage().c_str());
         updateConnectionStatus(protocol->getErrorMessage().c_str());
         networkManager->disconnect();
         isConnecting = false;
         return NULL;
     }
     
+    logMsg("Handshake successful");
     updateConnectionStatus("Connected");
     
     // Handle messages
     protocol->handleMessages([](const std::string& status) {
+        logMsg("Protocol status: %s", status.c_str());
         updateConnectionStatus(status.c_str());
     });
     
     // Cleanup after disconnect
+    logMsg("Disconnecting");
     protocol->disconnect();
     networkManager->disconnect();
     updateConnectionStatus("Disconnected");
@@ -171,19 +211,23 @@ void* connectionThreadFunc(void* arg) {
 }
 
 void startConnection() {
+    logMsg("startConnection called, isConnecting=%d", isConnecting);
     if (isConnecting) {
         return;
     }
     
     if (!networkManager) {
+        logMsg("Creating NetworkManager");
         networkManager = new NetworkManager();
     }
     
     if (!protocol) {
+        logMsg("Creating CalibreProtocol");
         protocol = new CalibreProtocol(networkManager);
     }
     
     shouldStop = false;
+    logMsg("Creating connection thread");
     pthread_create(&connectionThread, NULL, connectionThreadFunc, NULL);
 }
 
@@ -254,6 +298,8 @@ void showMainScreen() {
 int mainEventHandler(int type, int par1, int par2) {
     switch (type) {
         case EVT_INIT:
+            initLog();
+            logMsg("EVT_INIT received");
             SetPanelType(PANEL_ENABLED);
             initConfig();
             showMainScreen();
@@ -266,16 +312,20 @@ int mainEventHandler(int type, int par1, int par2) {
             
         case EVT_KEYPRESS:
             if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV) {
+                logMsg("Back key pressed");
                 stopConnection();
                 saveAndCloseConfig();
+                closeLog();
                 CloseApp();
                 return 1;
             }
             if (par1 == IV_KEY_HOME) {
+                logMsg("Home key pressed");
                 stopConnection();
                 saveAndCloseConfig();
                 ClearScreen();
                 FullUpdate();
+                closeLog();
                 CloseApp();
                 return 1;
             }
@@ -283,18 +333,22 @@ int mainEventHandler(int type, int par1, int par2) {
             
         case EVT_PANEL:
             if (par1 == IV_KEY_HOME) {
+                logMsg("Panel home pressed");
                 stopConnection();
                 saveAndCloseConfig();
                 ClearScreen();
                 FullUpdate();
+                closeLog();
                 CloseApp();
                 return 1;
             }
             break;
             
         case EVT_EXIT:
+            logMsg("EVT_EXIT received");
             stopConnection();
             saveAndCloseConfig();
+            closeLog();
             break;
     }
     
