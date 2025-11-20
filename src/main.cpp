@@ -124,7 +124,7 @@ void initConfig() {
             WriteString(appConfig, KEY_READ_COLUMN, DEFAULT_READ_COLUMN);
             WriteString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
             WriteString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
-            WriteInt(appConfig, KEY_CONNECTION_ENABLED, 0);
+            WriteInt(appConfig, KEY_CONNECTION, 0);
             SaveConfig(appConfig);
         }
     }
