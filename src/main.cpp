@@ -25,8 +25,6 @@ static const char *DEFAULT_READ_DATE_COLUMN = "#read_date";
 static const char *DEFAULT_FAVORITE_COLUMN = "#favorite";
 
 // Config editor structure
-static const char *onoff[] = { "Off", "On", NULL };
-
 static iconfigedit configItems[] = {
 	{
         CFG_CHECKBOX,                 // <--- ИЗМЕНЕНИЕ: Тип элемента "Чекбокс/Переключатель"
