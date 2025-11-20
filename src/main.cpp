@@ -5,7 +5,7 @@
 
 // Global config
 static iconfig *appConfig = NULL;
-static const char *CONFIG_FILE = "/mnt/ext1/system/config/calibre-companion.cfg";
+static const char *CONFIG_FILE = "/mnt/ext1/system/config/calibre-connect.cfg";
 
 // Config keys
 static const char *KEY_IP = "ip";
@@ -170,7 +170,7 @@ void showMainScreen() {
     ClearScreen();
     
     OpenConfigEditor(
-        (char *)"Calibre Companion",
+        (char *)"Connect to Calibre",
         appConfig,
         configItems,
         configSaveHandler,
