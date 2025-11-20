@@ -24,23 +24,21 @@ static const char *DEFAULT_PASSWORD = "";
 static const char *DEFAULT_READ_COLUMN = "#read";
 static const char *DEFAULT_READ_DATE_COLUMN = "#read_date";
 static const char *DEFAULT_FAVORITE_COLUMN = "#favorite";
-static const char *DEFAULT_INPUT_FOLDER = "/mnt/ext1";
 
 // Config editor structure
 static const char *onoff[] = { "Off", "On", NULL };
-static char DEFAULT_INPUT_FOLDER[] = "/mnt/ext1";
 
 static iconfigedit configItems[] = {
-    {
-        CFG_CHOICE,           // type
-        NULL,                 // icon
-        (char*)"Connection",  // text
-        NULL,                 // hint
-        (char*)KEY_CONNECTION_ENABLED,  // name (ключ!)
-        (char*)"0",           // default ("0" = Off)
-        (char**)onoff,        // variants <--- ВАЖНО: это поле #7
-        NULL,                 // submenu
-        NULL                  // icon_theme
+	{
+        CFG_CHECKBOX,                 // <--- ИЗМЕНЕНИЕ: Тип элемента "Чекбокс/Переключатель"
+        NULL,                         // icon
+        (char*)"Connection",          // text
+        NULL,                         // hint
+        (char*)KEY_CONNECTION_ENABLED,// name
+        (char*)"0",                   // default ("0" = выключено, "1" = включено)
+        NULL,                         // <--- ИЗМЕНЕНИЕ: Варианты (onoff) здесь НЕ нужны, ставим NULL
+        NULL,                         // submenu
+        NULL                          // icon_theme
     },
     {
         CFG_IPADDR,
@@ -100,17 +98,6 @@ static iconfigedit configItems[] = {
         (char *)KEY_FAVORITE_COLUMN,
         (char *)DEFAULT_FAVORITE_COLUMN,
         NULL,
-        NULL
-    },
-	{
-        CFG_DIRECTORY,
-        NULL,
-        (char*)"Input Folder",        
-        NULL,                         
-        (char*)KEY_INPUT_FOLDER,      
-        DEFAULT_INPUT_FOLDER,         // Теперь это массив char[], каст (char*) не обязателен, но допустим
-        dir_variants,                 // Передаем массив вариантов
-        NULL,                        
         NULL
     },
     {
