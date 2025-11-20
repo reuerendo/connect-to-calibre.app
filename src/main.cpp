@@ -33,13 +33,11 @@ static iconfigedit configItems[] = {
         NULL,
         (char *)"Connection",
         NULL,
-        (char *)KEY_CONNECTION_ENABLED,
-        (char *)"0",
         NULL,
         NULL
     },
     {
-        CFG_ENTEXT,
+        CFG_IPADDR,
         NULL,
         (char *)"IP Address",
         NULL,
@@ -103,8 +101,6 @@ static iconfigedit configItems[] = {
         NULL,
         (char *)"Input Folder",
         NULL,
-        (char *)KEY_INPUT_FOLDER,
-        (char *)DEFAULT_INPUT_FOLDER,
         NULL,
         NULL
     },
