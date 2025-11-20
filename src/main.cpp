@@ -28,26 +28,17 @@ static const char *DEFAULT_INPUT_FOLDER = "/mnt/ext1/Books";
 
 // Connection status choices
 static char *connectionChoices[] = {
-    (char *)"Disabled",
-    (char *)"Enabled",
+    (char *)"Off",
+    (char *)"On",
     NULL
 };
 
 // Config editor structure
 static iconfigedit configItems[] = {
     {
-        CFG_INFO,
-        NULL,
-        (char *)"Connection",
-        NULL,
-        NULL,
-        NULL,
-        NULL
-    },
-    {
         CFG_CHOICE,
         NULL,
-        (char *)"Status",
+        (char *)"Connection",
         NULL,
         (char *)KEY_CONNECTION_ENABLED,
         (char *)"0",
@@ -176,7 +167,6 @@ void saveAndCloseConfig() {
 
 void configSaveHandler() {
     saveAndCloseConfig();
-    Message(ICON_INFORMATION, (char *)"Settings", (char *)"Settings saved successfully", 2000);
 }
 
 void configItemChangedHandler(char *name) {
@@ -210,7 +200,7 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
             
         case EVT_KEYPRESS:
-            if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV) {
+            if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV || par1 == IV_KEY_HOME) {
                 saveAndCloseConfig();
                 CloseApp();
                 return 1;
@@ -218,7 +208,6 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
             
         case EVT_PANEL:
-            // Handle panel events (Home button in panel)
             if (par1 == IV_KEY_HOME) {
                 saveAndCloseConfig();
                 CloseApp();
