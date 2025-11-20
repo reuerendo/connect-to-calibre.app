@@ -29,9 +29,8 @@ static AppSettings settings = {
     false
 };
 
-// Menu items
-static imenu mainMenu;
-static imenu *currentSubmenu = NULL;
+// Menu items  
+static imenu menuItems[9];
 
 // ============================================================================
 // SETTINGS MANAGEMENT
@@ -92,32 +91,14 @@ void saveSettings() {
 }
 
 // ============================================================================
-// MENU CALLBACKS
+// INPUT CALLBACKS
 // ============================================================================
-
-void toggleConnectionCallback(int index) {
-    settings.connectionEnabled = !settings.connectionEnabled;
-    saveSettings();
-    
-    // Update menu item text
-    if (mainMenu.submenu && mainMenu.submenu[0].text) {
-        free(mainMenu.submenu[0].text);
-        mainMenu.submenu[0].text = strdup(settings.connectionEnabled ? 
-            "Connection: Enabled" : "Connection: Disabled");
-    }
-    
-    // Show notification
-    Message(ICON_INFORMATION, "Connection", 
-            settings.connectionEnabled ? "Connection enabled" : "Connection disabled", 
-            2000);
-}
 
 void ipCallback(char *text) {
     if (text) {
         strncpy(settings.ip, text, sizeof(settings.ip) - 1);
         settings.ip[sizeof(settings.ip) - 1] = '\0';
         saveSettings();
-        Message(ICON_INFORMATION, "IP Address", "IP address updated", 2000);
     }
 }
 
@@ -126,7 +107,6 @@ void portCallback(char *text) {
         strncpy(settings.port, text, sizeof(settings.port) - 1);
         settings.port[sizeof(settings.port) - 1] = '\0';
         saveSettings();
-        Message(ICON_INFORMATION, "Port", "Port updated", 2000);
     }
 }
 
@@ -135,7 +115,6 @@ void passwordCallback(char *text) {
         strncpy(settings.password, text, sizeof(settings.password) - 1);
         settings.password[sizeof(settings.password) - 1] = '\0';
         saveSettings();
-        Message(ICON_INFORMATION, "Password", "Password updated", 2000);
     }
 }
 
@@ -144,7 +123,6 @@ void readColumnCallback(char *text) {
         strncpy(settings.readColumn, text, sizeof(settings.readColumn) - 1);
         settings.readColumn[sizeof(settings.readColumn) - 1] = '\0';
         saveSettings();
-        Message(ICON_INFORMATION, "Read Column", "Column name updated", 2000);
     }
 }
 
@@ -153,7 +131,6 @@ void readDateColumnCallback(char *text) {
         strncpy(settings.readDateColumn, text, sizeof(settings.readDateColumn) - 1);
         settings.readDateColumn[sizeof(settings.readDateColumn) - 1] = '\0';
         saveSettings();
-        Message(ICON_INFORMATION, "Read Date Column", "Column name updated", 2000);
     }
 }
 
@@ -162,7 +139,6 @@ void favoriteColumnCallback(char *text) {
         strncpy(settings.favoriteColumn, text, sizeof(settings.favoriteColumn) - 1);
         settings.favoriteColumn[sizeof(settings.favoriteColumn) - 1] = '\0';
         saveSettings();
-        Message(ICON_INFORMATION, "Favorite Column", "Column name updated", 2000);
     }
 }
 
@@ -171,143 +147,156 @@ void folderCallback(char *path) {
         strncpy(settings.inputFolder, path, sizeof(settings.inputFolder) - 1);
         settings.inputFolder[sizeof(settings.inputFolder) - 1] = '\0';
         saveSettings();
-        Message(ICON_INFORMATION, "Input Folder", "Folder path updated", 2000);
     }
 }
 
-void editIPHandler(int index) {
-    char buffer[64];
-    strncpy(buffer, settings.ip, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    OpenKeyboard("IP Address", buffer, sizeof(buffer) - 1, KBD_NORMAL, ipCallback);
-}
+// ============================================================================
+// MENU HANDLER
+// ============================================================================
 
-void editPortHandler(int index) {
-    char buffer[16];
-    strncpy(buffer, settings.port, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    OpenKeyboard("Port", buffer, sizeof(buffer) - 1, KBD_NUMERIC, portCallback);
-}
-
-void editPasswordHandler(int index) {
-    char buffer[128];
-    strncpy(buffer, settings.password, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    OpenKeyboard("Password", buffer, sizeof(buffer) - 1, KBD_PASSWORD, passwordCallback);
-}
-
-void editReadColumnHandler(int index) {
-    char buffer[64];
-    strncpy(buffer, settings.readColumn, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    OpenKeyboard("Read Status Column", buffer, sizeof(buffer) - 1, KBD_NORMAL, readColumnCallback);
-}
-
-void editReadDateColumnHandler(int index) {
-    char buffer[64];
-    strncpy(buffer, settings.readDateColumn, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    OpenKeyboard("Read Date Column", buffer, sizeof(buffer) - 1, KBD_NORMAL, readDateColumnCallback);
-}
-
-void editFavoriteColumnHandler(int index) {
-    char buffer[64];
-    strncpy(buffer, settings.favoriteColumn, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    OpenKeyboard("Favorite Column", buffer, sizeof(buffer) - 1, KBD_NORMAL, favoriteColumnCallback);
-}
-
-void editInputFolderHandler(int index) {
+void menuHandler(int index) {
     char buffer[256];
-    strncpy(buffer, settings.inputFolder, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    OpenDirectorySelector("Input Folder", buffer, sizeof(buffer), folderCallback);
+    
+    switch (index) {
+        case 0: // Connection toggle
+            settings.connectionEnabled = !settings.connectionEnabled;
+            saveSettings();
+            Message(ICON_INFORMATION, "Connection", 
+                    settings.connectionEnabled ? "Connection enabled" : "Connection disabled", 
+                    2000);
+            break;
+            
+        case 1: // IP Address
+            strncpy(buffer, settings.ip, sizeof(buffer) - 1);
+            buffer[sizeof(buffer) - 1] = '\0';
+            OpenKeyboard("IP Address", buffer, sizeof(buffer) - 1, KBD_NORMAL, ipCallback);
+            break;
+            
+        case 2: // Port
+            strncpy(buffer, settings.port, sizeof(buffer) - 1);
+            buffer[sizeof(buffer) - 1] = '\0';
+            OpenKeyboard("Port", buffer, sizeof(buffer) - 1, KBD_NUMERIC, portCallback);
+            break;
+            
+        case 3: // Password
+            strncpy(buffer, settings.password, sizeof(buffer) - 1);
+            buffer[sizeof(buffer) - 1] = '\0';
+            OpenKeyboard("Password", buffer, sizeof(buffer) - 1, KBD_PASSWORD, passwordCallback);
+            break;
+            
+        case 4: // Read Column
+            strncpy(buffer, settings.readColumn, sizeof(buffer) - 1);
+            buffer[sizeof(buffer) - 1] = '\0';
+            OpenKeyboard("Read Status Column", buffer, sizeof(buffer) - 1, KBD_NORMAL, readColumnCallback);
+            break;
+            
+        case 5: // Read Date Column
+            strncpy(buffer, settings.readDateColumn, sizeof(buffer) - 1);
+            buffer[sizeof(buffer) - 1] = '\0';
+            OpenKeyboard("Read Date Column", buffer, sizeof(buffer) - 1, KBD_NORMAL, readDateColumnCallback);
+            break;
+            
+        case 6: // Favorite Column
+            strncpy(buffer, settings.favoriteColumn, sizeof(buffer) - 1);
+            buffer[sizeof(buffer) - 1] = '\0';
+            OpenKeyboard("Favorite Column", buffer, sizeof(buffer) - 1, KBD_NORMAL, favoriteColumnCallback);
+            break;
+            
+        case 7: // Input Folder
+            strncpy(buffer, settings.inputFolder, sizeof(buffer) - 1);
+            buffer[sizeof(buffer) - 1] = '\0';
+            OpenDirectorySelector("Input Folder", buffer, sizeof(buffer), folderCallback);
+            break;
+    }
 }
 
 // ============================================================================
 // MENU CREATION
 // ============================================================================
 
-void createMainMenu() {
-    // Create menu structure using standard PocketBook menu system
-    mainMenu.type = 1; // Menu list type
-    mainMenu.n = 8; // Number of items
-    mainMenu.submenu = (imenu *)calloc(9, sizeof(imenu)); // +1 for terminator
+void updateMenuItems() {
+    // Free old text if any
+    for (int i = 0; i < 8; i++) {
+        if (menuItems[i].text) {
+            free(menuItems[i].text);
+            menuItems[i].text = NULL;
+        }
+    }
     
     // Item 0: Connection toggle
-    mainMenu.submenu[0].type = 0; // Regular menu item
-    mainMenu.submenu[0].text = strdup(settings.connectionEnabled ? 
-        "Connection: Enabled" : "Connection: Disabled");
-    mainMenu.submenu[0].index = 0;
-    mainMenu.submenu[0].handler = toggleConnectionCallback;
+    menuItems[0].type = 1; // Regular menu item
+    menuItems[0].index = 0;
+    menuItems[0].text = (char *)malloc(128);
+    snprintf(menuItems[0].text, 128, "Connection: %s", 
+             settings.connectionEnabled ? "Enabled" : "Disabled");
+    menuItems[0].submenu = NULL;
     
     // Item 1: IP Address
-    mainMenu.submenu[1].type = 0;
-    mainMenu.submenu[1].text = (char *)malloc(128);
-    snprintf(mainMenu.submenu[1].text, 128, "IP Address: %s", settings.ip);
-    mainMenu.submenu[1].index = 1;
-    mainMenu.submenu[1].handler = editIPHandler;
+    menuItems[1].type = 1;
+    menuItems[1].index = 1;
+    menuItems[1].text = (char *)malloc(128);
+    snprintf(menuItems[1].text, 128, "IP Address: %s", settings.ip);
+    menuItems[1].submenu = NULL;
     
     // Item 2: Port
-    mainMenu.submenu[2].type = 0;
-    mainMenu.submenu[2].text = (char *)malloc(64);
-    snprintf(mainMenu.submenu[2].text, 64, "Port: %s", settings.port);
-    mainMenu.submenu[2].index = 2;
-    mainMenu.submenu[2].handler = editPortHandler;
+    menuItems[2].type = 1;
+    menuItems[2].index = 2;
+    menuItems[2].text = (char *)malloc(64);
+    snprintf(menuItems[2].text, 64, "Port: %s", settings.port);
+    menuItems[2].submenu = NULL;
     
     // Item 3: Password
-    mainMenu.submenu[3].type = 0;
-    mainMenu.submenu[3].text = (char *)malloc(128);
+    menuItems[3].type = 1;
+    menuItems[3].index = 3;
+    menuItems[3].text = (char *)malloc(128);
     if (strlen(settings.password) > 0) {
-        snprintf(mainMenu.submenu[3].text, 128, "Password: ••••••••");
+        snprintf(menuItems[3].text, 128, "Password: ••••••••");
     } else {
-        snprintf(mainMenu.submenu[3].text, 128, "Password: Not set");
+        snprintf(menuItems[3].text, 128, "Password: Not set");
     }
-    mainMenu.submenu[3].index = 3;
-    mainMenu.submenu[3].handler = editPasswordHandler;
+    menuItems[3].submenu = NULL;
     
     // Item 4: Read Column
-    mainMenu.submenu[4].type = 0;
-    mainMenu.submenu[4].text = (char *)malloc(128);
-    snprintf(mainMenu.submenu[4].text, 128, "Read Status Column: %s", settings.readColumn);
-    mainMenu.submenu[4].index = 4;
-    mainMenu.submenu[4].handler = editReadColumnHandler;
+    menuItems[4].type = 1;
+    menuItems[4].index = 4;
+    menuItems[4].text = (char *)malloc(128);
+    snprintf(menuItems[4].text, 128, "Read Status Column: %s", settings.readColumn);
+    menuItems[4].submenu = NULL;
     
     // Item 5: Read Date Column
-    mainMenu.submenu[5].type = 0;
-    mainMenu.submenu[5].text = (char *)malloc(128);
-    snprintf(mainMenu.submenu[5].text, 128, "Read Date Column: %s", settings.readDateColumn);
-    mainMenu.submenu[5].index = 5;
-    mainMenu.submenu[5].handler = editReadDateColumnHandler;
+    menuItems[5].type = 1;
+    menuItems[5].index = 5;
+    menuItems[5].text = (char *)malloc(128);
+    snprintf(menuItems[5].text, 128, "Read Date Column: %s", settings.readDateColumn);
+    menuItems[5].submenu = NULL;
     
     // Item 6: Favorite Column
-    mainMenu.submenu[6].type = 0;
-    mainMenu.submenu[6].text = (char *)malloc(128);
-    snprintf(mainMenu.submenu[6].text, 128, "Favorite Column: %s", settings.favoriteColumn);
-    mainMenu.submenu[6].index = 6;
-    mainMenu.submenu[6].handler = editFavoriteColumnHandler;
+    menuItems[6].type = 1;
+    menuItems[6].index = 6;
+    menuItems[6].text = (char *)malloc(128);
+    snprintf(menuItems[6].text, 128, "Favorite Column: %s", settings.favoriteColumn);
+    menuItems[6].submenu = NULL;
     
     // Item 7: Input Folder
-    mainMenu.submenu[7].type = 0;
-    mainMenu.submenu[7].text = (char *)malloc(300);
-    snprintf(mainMenu.submenu[7].text, 300, "Input Folder: %s", settings.inputFolder);
-    mainMenu.submenu[7].index = 7;
-    mainMenu.submenu[7].handler = editInputFolderHandler;
+    menuItems[7].type = 1;
+    menuItems[7].index = 7;
+    menuItems[7].text = (char *)malloc(300);
+    snprintf(menuItems[7].text, 300, "Input Folder: %s", settings.inputFolder);
+    menuItems[7].submenu = NULL;
     
     // Terminator
-    mainMenu.submenu[8].type = 0;
-    mainMenu.submenu[8].text = NULL;
+    menuItems[8].type = 0;
+    menuItems[8].index = 0;
+    menuItems[8].text = NULL;
+    menuItems[8].submenu = NULL;
 }
 
-void freeMainMenu() {
-    if (mainMenu.submenu) {
-        for (int i = 0; i < mainMenu.n; i++) {
-            if (mainMenu.submenu[i].text) {
-                free(mainMenu.submenu[i].text);
-            }
+void cleanupMenuItems() {
+    for (int i = 0; i < 8; i++) {
+        if (menuItems[i].text) {
+            free(menuItems[i].text);
+            menuItems[i].text = NULL;
         }
-        free(mainMenu.submenu);
-        mainMenu.submenu = NULL;
     }
 }
 
@@ -319,14 +308,15 @@ int mainEventHandler(int type, int par1, int par2) {
     switch (type) {
         case EVT_INIT:
             loadSettings();
-            createMainMenu();
-            
-            // Open menu with title
-            OpenMenu(&mainMenu, 0, 0, 0, "CALIBRE COMPANION", NULL);
+            updateMenuItems();
+            // Open menu: array, selected index, x, y, handler
+            OpenMenu(menuItems, 0, 0, 0, menuHandler);
             break;
             
         case EVT_SHOW:
-            // Reopen menu if needed
+            // Update menu items when returning from keyboard/directory selector
+            updateMenuItems();
+            OpenMenu(menuItems, 0, 0, 0, menuHandler);
             break;
             
         case EVT_KEYPRESS:
@@ -337,7 +327,7 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
             
         case EVT_EXIT:
-            freeMainMenu();
+            cleanupMenuItems();
             break;
     }
     
