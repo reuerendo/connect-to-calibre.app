@@ -26,23 +26,16 @@ static const char *DEFAULT_READ_DATE_COLUMN = "#read_date";
 static const char *DEFAULT_FAVORITE_COLUMN = "#favorite";
 static const char *DEFAULT_INPUT_FOLDER = "/mnt/ext1/Books";
 
-// Connection status choices
-static char *connectionChoices[] = {
-    (char *)"Off",
-    (char *)"On",
-    NULL
-};
-
 // Config editor structure
 static iconfigedit configItems[] = {
     {
-        CFG_CHOICE,
+        CFG_CHECKBOX,  // Changed from CFG_CHOICE to CFG_CHECKBOX for toggle
         NULL,
         (char *)"Connection",
         NULL,
         (char *)KEY_CONNECTION_ENABLED,
         (char *)"0",
-        connectionChoices,
+        NULL,
         NULL
     },
     {
@@ -106,7 +99,7 @@ static iconfigedit configItems[] = {
         NULL
     },
     {
-        CFG_DIRECTORY,
+        CFG_DIRECTORY,  // This type automatically provides folder picker
         NULL,
         (char *)"Input Folder",
         NULL,
@@ -191,8 +184,15 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
             
         case EVT_KEYPRESS:
-            if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV || par1 == IV_KEY_HOME) {
+            if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV) {
                 saveAndCloseConfig();
+                CloseApp();
+                return 1;
+            }
+            if (par1 == IV_KEY_HOME) {
+                saveAndCloseConfig();
+                ClearScreen();  // Clear screen before closing
+                FullUpdate();   // Force update to show cleared screen
                 CloseApp();
                 return 1;
             }
@@ -201,6 +201,8 @@ int mainEventHandler(int type, int par1, int par2) {
         case EVT_PANEL:
             if (par1 == IV_KEY_HOME) {
                 saveAndCloseConfig();
+                ClearScreen();  // Clear screen before closing
+                FullUpdate();   // Force update to show cleared screen
                 CloseApp();
                 return 1;
             }
