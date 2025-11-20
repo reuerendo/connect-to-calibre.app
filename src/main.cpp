@@ -224,24 +224,49 @@ void* connectionThreadFunc(void* arg) {
 }
 
 void startConnection() {
-    logMsg("startConnection called, isConnecting=%d", isConnecting);
+    DEBUG_LOG("startConnection called, isConnecting=%d", isConnecting);
+    
     if (isConnecting) {
+        DEBUG_LOG("Already connecting");
         return;
     }
     
+    // Check network status before attempting connection
+    int netStatus = QueryNetwork();
+    DEBUG_LOG("Network status check: 0x%X", netStatus);
+    
+    if (!(netStatus & NET_CONNECTED)) {
+        DEBUG_LOG("Network not connected");
+        
+        // Try to get more info about network state
+        iv_netinfo* netInfo = NetInfo();
+        if (netInfo) {
+            DEBUG_LOG("Network info: connected=%d, name=%s", 
+                     netInfo->connected, netInfo->name);
+        }
+        
+        updateConnectionStatus("Network not available");
+        Message(ICON_WARNING, "Network Error", 
+                "WiFi is not connected. Please connect to WiFi first.", 3000);
+        return;
+    }
+    
+    isConnecting = true;
+    
     if (!networkManager) {
-        logMsg("Creating NetworkManager");
+        DEBUG_LOG("Creating NetworkManager");
         networkManager = new NetworkManager();
     }
     
     if (!protocol) {
-        logMsg("Creating CalibreProtocol");
+        DEBUG_LOG("Creating CalibreProtocol");
         protocol = new CalibreProtocol(networkManager);
     }
     
-    shouldStop = false;
-    logMsg("Creating connection thread");
-    pthread_create(&connectionThread, NULL, connectionThreadFunc, NULL);
+    // Start connection in thread
+    DEBUG_LOG("Creating connection thread");
+    connectionThread = std::thread(connectionThreadFunc);
+    DEBUG_LOG("Connection thread started");
 }
 
 void stopConnection() {

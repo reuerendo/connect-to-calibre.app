@@ -56,6 +56,81 @@ NetworkManager::~NetworkManager() {
     }
 }
 
+bool NetworkManager::connect(const std::string& host, int port) {
+    DEBUG_LOG("Connecting to server: %s:%d", host.c_str(), port);
+    
+    // Check network status first
+    int netStatus = QueryNetwork();
+    DEBUG_LOG("Network status: %d", netStatus);
+    
+    if (!(netStatus & NET_CONNECTED)) {
+        DEBUG_LOG("Network not connected, status flags: 0x%X", netStatus);
+        
+        // Check if WiFi is enabled
+        if (!(netStatus & NET_WIFIREADY)) {
+            DEBUG_LOG("WiFi not ready");
+            return false;
+        }
+        
+        // Try to get network info
+        iv_netinfo* netInfo = NetInfo();
+        if (netInfo) {
+            DEBUG_LOG("Network info: connected=%d, name=%s, device=%s", 
+                     netInfo->connected, netInfo->name, netInfo->device);
+            
+            if (netInfo->connected == 0) {
+                DEBUG_LOG("Network reports not connected");
+                return false;
+            }
+        } else {
+            DEBUG_LOG("Failed to get network info");
+            return false;
+        }
+    }
+    
+    if (socketFd >= 0) {
+        DEBUG_LOG("Closing existing socket");
+        close(socketFd);
+    }
+    
+    socketFd = socket(AF_INET, SOCK_STREAM, 0);
+    if (socketFd < 0) {
+        DEBUG_LOG("Failed to create socket: %s", strerror(errno));
+        return false;
+    }
+    DEBUG_LOG("TCP socket created: fd=%d", socketFd);
+    
+    // Set socket timeout
+    struct timeval timeout;
+    timeout.tv_sec = 10;
+    timeout.tv_usec = 0;
+    setsockopt(socketFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(socketFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    
+    struct sockaddr_in serverAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+    
+    if (inet_pton(AF_INET, host.c_str(), &serverAddr.sin_addr) <= 0) {
+        DEBUG_LOG("Invalid IP address: %s", host.c_str());
+        close(socketFd);
+        socketFd = -1;
+        return false;
+    }
+    
+    DEBUG_LOG("Attempting connection...");
+    if (::connect(socketFd, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+        DEBUG_LOG("Connection failed: %s (errno=%d)", strerror(errno), errno);
+        close(socketFd);
+        socketFd = -1;
+        return false;
+    }
+    
+    DEBUG_LOG("Connected successfully");
+    return true;
+}
+
 bool NetworkManager::createUDPSocket() {
     logNetMsg("Creating UDP socket");
     
