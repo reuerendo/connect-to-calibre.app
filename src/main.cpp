@@ -11,15 +11,26 @@
 static FILE* logFile = NULL;
 
 void initLog() {
-    logFile = fopen("/tmp/calibre-connect.log", "w");
+    const char* logPath = "/mnt/ext1/system/calibre-connect.log";
+    logFile = iv_fopen(logPath, "a");
     if (logFile) {
-        fprintf(logFile, "=== Calibre Connect Started ===\n");
+        time_t now = time(NULL);
+        fprintf(logFile, "\n=== Calibre Connect Started [%s] ===\n", ctime(&now));
         fflush(logFile);
     }
 }
 
 void logMsg(const char* format, ...) {
-    if (!logFile) return;
+    if (!logFile) {
+        initLog(); // Try to reopen if closed
+        if (!logFile) return;
+    }
+    
+    time_t now = time(NULL);
+    struct tm* tm_info = localtime(&now);
+    fprintf(logFile, "[%02d:%02d:%02d] ", 
+            tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
+    
     va_list args;
     va_start(args, format);
     vfprintf(logFile, format, args);
@@ -30,8 +41,10 @@ void logMsg(const char* format, ...) {
 
 void closeLog() {
     if (logFile) {
-        fprintf(logFile, "=== Calibre Connect Closed ===\n");
-        fclose(logFile);
+        time_t now = time(NULL);
+        fprintf(logFile, "=== Calibre Connect Closed [%s] ===\n", ctime(&now));
+        fflush(logFile);
+        iv_fclose(logFile);
         logFile = NULL;
     }
 }
