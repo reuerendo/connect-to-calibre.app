@@ -27,12 +27,12 @@ static const char *DEFAULT_FAVORITE_COLUMN = "#favorite";
 // Config editor structure
 static iconfigedit configItems[] = {
 	{
-        CFG_CHECKBOX,                 // <--- ИЗМЕНЕНИЕ: Тип элемента "Чекбокс/Переключатель"
+        CFG_CHOICE,                 // <--- ИЗМЕНЕНИЕ: Тип элемента "Чекбокс/Переключатель"
         NULL,                         // icon
         (char*)"Connection",          // text
         NULL,                         // hint
         (char*)KEY_CONNECTION_ENABLED,// name
-        (char*)"off",                   // default ("0" = выключено, "1" = включено)
+        (char*)"0",                   // default ("0" = выключено, "1" = включено)
         NULL,                         // <--- ИЗМЕНЕНИЕ: Варианты (onoff) здесь НЕ нужны, ставим NULL
         NULL,                         // submenu
         NULL                          // icon_theme
@@ -208,4 +208,3 @@ int main(int argc, char *argv[]) {
     InkViewMain(mainEventHandler);
     return 0;
 }
-
