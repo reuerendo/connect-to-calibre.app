@@ -35,7 +35,7 @@ static iconfigedit configItems[] = {
         NULL,                // icon
         (char*)"Connection", // title
         (void*)onoff,        // data (OK)
-        (char*)KEY_CONNECTION, // key (string!)
+        NULL,
         (char*)"0",          // default value
         NULL,                // min
         NULL                 // max
