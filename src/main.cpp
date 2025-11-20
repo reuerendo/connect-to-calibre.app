@@ -123,8 +123,8 @@ void updateConnectionStatus(const char* status) {
     if (appConfig) {
         WriteString(appConfig, KEY_CONNECTION, status);
         SaveConfig(appConfig);
-        // Force UI update
-        SendEvent(GetCurrentEventHandler(), EVT_SHOW, 0, 0);
+        // Trigger UI redraw
+        FullUpdate();
     }
 }
 
