@@ -31,11 +31,11 @@ static const char *onoff[] = { "Off", "On", NULL };
 
 static iconfigedit configItems[] = {
     {
-        CFG_CHOICE,           // type
+        CFG_CHECKBOX,           // type
         NULL,                 // icon
         (char*)"Connection",  // text
         NULL,                 // hint
-        (char*)"connection",  // name (ключ!)
+        (char*)KEY_CONNECTION_ENABLED,  // name (ключ!)
         (char*)"0",           // default ("0" = Off)
         (char**)onoff,        // variants <--- ВАЖНО: это поле #7
         NULL,                 // submenu
