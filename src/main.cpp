@@ -58,7 +58,7 @@ static iconfigedit configItems[] = {
         CFG_ENTEXT,
         NULL,
         (char *)"IP Address",
-        (char *)"Enter IP address",
+        NULL,
         (char *)KEY_IP,
         (char *)DEFAULT_IP,
         NULL,
@@ -68,7 +68,7 @@ static iconfigedit configItems[] = {
         CFG_NUMBER,
         NULL,
         (char *)"Port",
-        (char *)"Enter port number",
+        NULL,
         (char *)KEY_PORT,
         (char *)DEFAULT_PORT,
         NULL,
@@ -78,7 +78,7 @@ static iconfigedit configItems[] = {
         CFG_PASSWORD,
         NULL,
         (char *)"Password",
-        (char *)"Enter password",
+        NULL,
         (char *)KEY_PASSWORD,
         (char *)DEFAULT_PASSWORD,
         NULL,
@@ -97,7 +97,7 @@ static iconfigedit configItems[] = {
         CFG_TEXT,
         NULL,
         (char *)"Read Status Column",
-        (char *)"Column name for read status",
+        NULL,
         (char *)KEY_READ_COLUMN,
         (char *)DEFAULT_READ_COLUMN,
         NULL,
@@ -107,7 +107,7 @@ static iconfigedit configItems[] = {
         CFG_TEXT,
         NULL,
         (char *)"Read Date Column",
-        (char *)"Column name for read date",
+        NULL,
         (char *)KEY_READ_DATE_COLUMN,
         (char *)DEFAULT_READ_DATE_COLUMN,
         NULL,
@@ -117,7 +117,7 @@ static iconfigedit configItems[] = {
         CFG_TEXT,
         NULL,
         (char *)"Favorite Column",
-        (char *)"Column name for favorites",
+        NULL,
         (char *)KEY_FAVORITE_COLUMN,
         (char *)DEFAULT_FAVORITE_COLUMN,
         NULL,
@@ -127,7 +127,7 @@ static iconfigedit configItems[] = {
         CFG_DIRECTORY,
         NULL,
         (char *)"Input Folder",
-        (char *)"Select books folder",
+        NULL,
         (char *)KEY_INPUT_FOLDER,
         (char *)DEFAULT_INPUT_FOLDER,
         NULL,
@@ -211,6 +211,15 @@ int mainEventHandler(int type, int par1, int par2) {
             
         case EVT_KEYPRESS:
             if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV) {
+                saveAndCloseConfig();
+                CloseApp();
+                return 1;
+            }
+            break;
+            
+        case EVT_PANEL:
+            // Handle panel events (Home button in panel)
+            if (par1 == IV_KEY_HOME) {
                 saveAndCloseConfig();
                 CloseApp();
                 return 1;
