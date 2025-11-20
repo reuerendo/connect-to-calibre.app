@@ -29,58 +29,13 @@ static AppSettings settings = {
     false
 };
 
-// UI state
-static ifont *titleFont = NULL;
-static ifont *labelFont = NULL;
-static ifont *valueFont = NULL;
-static int screenWidth = 0;
-static int screenHeight = 0;
-static int currentEditField = -1;
-
-// Layout constants
-static const int STATUS_BAR_HEIGHT = 48;
-static const int TITLE_BAR_HEIGHT = 70;
-static const int HOME_ICON_SIZE = 48;
-static const int PADDING = 30;
-static const int ITEM_HEIGHT = 100;
-static const int TOGGLE_SIZE = 60;
-
-enum FieldIndex {
-    FIELD_CONNECTION_TOGGLE = 0,
-    FIELD_IP,
-    FIELD_PORT,
-    FIELD_PASSWORD,
-    FIELD_READ_COLUMN,
-    FIELD_READ_DATE_COLUMN,
-    FIELD_FAVORITE_COLUMN,
-    FIELD_INPUT_FOLDER,
-    FIELD_COUNT
-};
-
-struct UIField {
-    const char* label;
-    char* value;
-    int maxLen;
-    bool isFolder;
-    bool isToggle;
-};
-
-static UIField uiFields[FIELD_COUNT];
+// Menu items
+static imenu mainMenu;
+static imenu *currentSubmenu = NULL;
 
 // ============================================================================
 // SETTINGS MANAGEMENT
 // ============================================================================
-
-void initUIFields() {
-    uiFields[FIELD_CONNECTION_TOGGLE] = {"Connection status", NULL, 0, false, true};
-    uiFields[FIELD_IP] = {"IP Address", settings.ip, sizeof(settings.ip), false, false};
-    uiFields[FIELD_PORT] = {"Port", settings.port, sizeof(settings.port), false, false};
-    uiFields[FIELD_PASSWORD] = {"Password", settings.password, sizeof(settings.password), false, false};
-    uiFields[FIELD_READ_COLUMN] = {"Read status column", settings.readColumn, sizeof(settings.readColumn), false, false};
-    uiFields[FIELD_READ_DATE_COLUMN] = {"Read date column", settings.readDateColumn, sizeof(settings.readDateColumn), false, false};
-    uiFields[FIELD_FAVORITE_COLUMN] = {"Favorite column", settings.favoriteColumn, sizeof(settings.favoriteColumn), false, false};
-    uiFields[FIELD_INPUT_FOLDER] = {"Input folder", settings.inputFolder, sizeof(settings.inputFolder), true, false};
-}
 
 void loadSettings() {
     FILE *f = iv_fopen("/mnt/ext1/system/config/calibre-companion.cfg", "r");
@@ -137,231 +92,241 @@ void saveSettings() {
 }
 
 // ============================================================================
-// UI DRAWING
+// MENU CALLBACKS
 // ============================================================================
 
-void drawTitleBar() {
-    int y = STATUS_BAR_HEIGHT;
+void toggleConnectionCallback(int index) {
+    settings.connectionEnabled = !settings.connectionEnabled;
+    saveSettings();
     
-    // Draw separator line
-    DrawLine(0, y, screenWidth, y, BLACK);
+    // Update menu item text
+    if (mainMenu.submenu && mainMenu.submenu[0].text) {
+        free(mainMenu.submenu[0].text);
+        mainMenu.submenu[0].text = strdup(settings.connectionEnabled ? 
+            "Connection: Enabled" : "Connection: Disabled");
+    }
     
-    // Draw home icon area (left side)
-    int iconX = PADDING;
-    int iconY = y + (TITLE_BAR_HEIGHT - HOME_ICON_SIZE) / 2;
-    
-    // Simple home icon - house shape
-    DrawLine(iconX + HOME_ICON_SIZE/2, iconY + 5, iconX + 5, iconY + HOME_ICON_SIZE/2, BLACK);
-    DrawLine(iconX + HOME_ICON_SIZE/2, iconY + 5, iconX + HOME_ICON_SIZE - 5, iconY + HOME_ICON_SIZE/2, BLACK);
-    DrawRect(iconX + 10, iconY + HOME_ICON_SIZE/2, iconX + HOME_ICON_SIZE - 10, iconY + HOME_ICON_SIZE - 5, BLACK);
-    
-    // Draw title (centered)
-    SetFont(titleFont, BLACK);
-    const char* title = "CALIBRE COMPANION";
-    int titleWidth = StringWidth(title);
-    DrawString((screenWidth - titleWidth) / 2, y + (TITLE_BAR_HEIGHT - 28) / 2, title);
-    
-    // Draw bottom separator line
-    DrawLine(0, y + TITLE_BAR_HEIGHT, screenWidth, y + TITLE_BAR_HEIGHT, BLACK);
+    // Show notification
+    Message(ICON_INFORMATION, "Connection", 
+            settings.connectionEnabled ? "Connection enabled" : "Connection disabled", 
+            2000);
 }
 
-void drawToggleButton(int x, int y, bool enabled) {
-    // Draw circle
-    if (enabled) {
-        FillArea(x, y, TOGGLE_SIZE, TOGGLE_SIZE, DGRAY);
-    }
-    DrawRect(x, y, x + TOGGLE_SIZE, y + TOGGLE_SIZE, BLACK);
-    
-    // Draw checkmark if enabled
-    if (enabled) {
-        SetFont(valueFont, WHITE);
-        DrawString(x + 15, y + 12, "✓");
+void ipCallback(char *text) {
+    if (text) {
+        strncpy(settings.ip, text, sizeof(settings.ip) - 1);
+        settings.ip[sizeof(settings.ip) - 1] = '\0';
+        saveSettings();
+        Message(ICON_INFORMATION, "IP Address", "IP address updated", 2000);
     }
 }
 
-void drawListItem(int index, int y) {
-    UIField *field = &uiFields[index];
-    
-    // Draw separator line above
-    if (index > 0) {
-        DrawLine(PADDING, y, screenWidth - PADDING, y, LGRAY);
-    }
-    
-    int contentY = y + (ITEM_HEIGHT - 50) / 2;
-    
-    // Draw label
-    SetFont(labelFont, BLACK);
-    DrawString(PADDING, contentY, field->label);
-    
-    if (field->isToggle) {
-        // Draw toggle button on right
-        int toggleX = screenWidth - PADDING - TOGGLE_SIZE;
-        int toggleY = y + (ITEM_HEIGHT - TOGGLE_SIZE) / 2;
-        drawToggleButton(toggleX, toggleY, settings.connectionEnabled);
-        
-        // Draw status text
-        SetFont(valueFont, DGRAY);
-        const char* status = settings.connectionEnabled ? "Enabled" : "Disabled";
-        int statusWidth = StringWidth(status);
-        DrawString(toggleX - statusWidth - 20, contentY + 30, status);
-    } else {
-        // Draw value text
-        SetFont(valueFont, DGRAY);
-        if (field->value && field->value[0] != '\0') {
-            char displayValue[256];
-            if (index == FIELD_PASSWORD && strlen(field->value) > 0) {
-                // Mask password
-                strcpy(displayValue, "••••••••");
-            } else {
-                strncpy(displayValue, field->value, sizeof(displayValue) - 1);
-                displayValue[sizeof(displayValue) - 1] = '\0';
-            }
-            
-            // Truncate if too long
-            int maxWidth = screenWidth - PADDING * 2 - 100;
-            while (StringWidth(displayValue) > maxWidth && strlen(displayValue) > 0) {
-                displayValue[strlen(displayValue) - 1] = '\0';
-            }
-            
-            DrawString(PADDING, contentY + 30, displayValue);
-        } else {
-            DrawString(PADDING, contentY + 30, "Not set");
-        }
-        
-        // Draw arrow on right
-        int arrowX = screenWidth - PADDING - 20;
-        DrawString(arrowX, contentY + 5, "›");
+void portCallback(char *text) {
+    if (text) {
+        strncpy(settings.port, text, sizeof(settings.port) - 1);
+        settings.port[sizeof(settings.port) - 1] = '\0';
+        saveSettings();
+        Message(ICON_INFORMATION, "Port", "Port updated", 2000);
     }
 }
 
-void drawUI() {
-    ClearScreen();
-    
-    // Draw title bar with home button
-    drawTitleBar();
-    
-    // Draw list items
-    int startY = STATUS_BAR_HEIGHT + TITLE_BAR_HEIGHT + 20;
-    for (int i = 0; i < FIELD_COUNT; i++) {
-        drawListItem(i, startY + i * ITEM_HEIGHT);
+void passwordCallback(char *text) {
+    if (text) {
+        strncpy(settings.password, text, sizeof(settings.password) - 1);
+        settings.password[sizeof(settings.password) - 1] = '\0';
+        saveSettings();
+        Message(ICON_INFORMATION, "Password", "Password updated", 2000);
     }
-    
-    FullUpdate();
 }
 
-// ============================================================================
-// INPUT CALLBACKS
-// ============================================================================
-
-void keyboardCallback(char *text) {
-    if (text && currentEditField >= 0 && currentEditField < FIELD_COUNT) {
-        UIField *field = &uiFields[currentEditField];
-        if (field->value) {
-            strncpy(field->value, text, field->maxLen - 1);
-            field->value[field->maxLen - 1] = '\0';
-            saveSettings();
-        }
+void readColumnCallback(char *text) {
+    if (text) {
+        strncpy(settings.readColumn, text, sizeof(settings.readColumn) - 1);
+        settings.readColumn[sizeof(settings.readColumn) - 1] = '\0';
+        saveSettings();
+        Message(ICON_INFORMATION, "Read Column", "Column name updated", 2000);
     }
-    currentEditField = -1;
-    drawUI();
+}
+
+void readDateColumnCallback(char *text) {
+    if (text) {
+        strncpy(settings.readDateColumn, text, sizeof(settings.readDateColumn) - 1);
+        settings.readDateColumn[sizeof(settings.readDateColumn) - 1] = '\0';
+        saveSettings();
+        Message(ICON_INFORMATION, "Read Date Column", "Column name updated", 2000);
+    }
+}
+
+void favoriteColumnCallback(char *text) {
+    if (text) {
+        strncpy(settings.favoriteColumn, text, sizeof(settings.favoriteColumn) - 1);
+        settings.favoriteColumn[sizeof(settings.favoriteColumn) - 1] = '\0';
+        saveSettings();
+        Message(ICON_INFORMATION, "Favorite Column", "Column name updated", 2000);
+    }
 }
 
 void folderCallback(char *path) {
-    if (path && path[0] != '\0' && currentEditField == FIELD_INPUT_FOLDER) {
+    if (path && path[0] != '\0') {
         strncpy(settings.inputFolder, path, sizeof(settings.inputFolder) - 1);
         settings.inputFolder[sizeof(settings.inputFolder) - 1] = '\0';
         saveSettings();
+        Message(ICON_INFORMATION, "Input Folder", "Folder path updated", 2000);
     }
-    currentEditField = -1;
-    drawUI();
+}
+
+void editIPHandler(int index) {
+    char buffer[64];
+    strncpy(buffer, settings.ip, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    OpenKeyboard("IP Address", buffer, sizeof(buffer) - 1, KBD_NORMAL, ipCallback);
+}
+
+void editPortHandler(int index) {
+    char buffer[16];
+    strncpy(buffer, settings.port, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    OpenKeyboard("Port", buffer, sizeof(buffer) - 1, KBD_NUMERIC, portCallback);
+}
+
+void editPasswordHandler(int index) {
+    char buffer[128];
+    strncpy(buffer, settings.password, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    OpenKeyboard("Password", buffer, sizeof(buffer) - 1, KBD_PASSWORD, passwordCallback);
+}
+
+void editReadColumnHandler(int index) {
+    char buffer[64];
+    strncpy(buffer, settings.readColumn, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    OpenKeyboard("Read Status Column", buffer, sizeof(buffer) - 1, KBD_NORMAL, readColumnCallback);
+}
+
+void editReadDateColumnHandler(int index) {
+    char buffer[64];
+    strncpy(buffer, settings.readDateColumn, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    OpenKeyboard("Read Date Column", buffer, sizeof(buffer) - 1, KBD_NORMAL, readDateColumnCallback);
+}
+
+void editFavoriteColumnHandler(int index) {
+    char buffer[64];
+    strncpy(buffer, settings.favoriteColumn, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    OpenKeyboard("Favorite Column", buffer, sizeof(buffer) - 1, KBD_NORMAL, favoriteColumnCallback);
+}
+
+void editInputFolderHandler(int index) {
+    char buffer[256];
+    strncpy(buffer, settings.inputFolder, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    OpenDirectorySelector("Input Folder", buffer, sizeof(buffer), folderCallback);
+}
+
+// ============================================================================
+// MENU CREATION
+// ============================================================================
+
+void createMainMenu() {
+    // Create menu structure using standard PocketBook menu system
+    mainMenu.type = 1; // Menu list type
+    mainMenu.n = 8; // Number of items
+    mainMenu.submenu = (imenu *)calloc(9, sizeof(imenu)); // +1 for terminator
+    
+    // Item 0: Connection toggle
+    mainMenu.submenu[0].type = 0; // Regular menu item
+    mainMenu.submenu[0].text = strdup(settings.connectionEnabled ? 
+        "Connection: Enabled" : "Connection: Disabled");
+    mainMenu.submenu[0].index = 0;
+    mainMenu.submenu[0].handler = toggleConnectionCallback;
+    
+    // Item 1: IP Address
+    mainMenu.submenu[1].type = 0;
+    mainMenu.submenu[1].text = (char *)malloc(128);
+    snprintf(mainMenu.submenu[1].text, 128, "IP Address: %s", settings.ip);
+    mainMenu.submenu[1].index = 1;
+    mainMenu.submenu[1].handler = editIPHandler;
+    
+    // Item 2: Port
+    mainMenu.submenu[2].type = 0;
+    mainMenu.submenu[2].text = (char *)malloc(64);
+    snprintf(mainMenu.submenu[2].text, 64, "Port: %s", settings.port);
+    mainMenu.submenu[2].index = 2;
+    mainMenu.submenu[2].handler = editPortHandler;
+    
+    // Item 3: Password
+    mainMenu.submenu[3].type = 0;
+    mainMenu.submenu[3].text = (char *)malloc(128);
+    if (strlen(settings.password) > 0) {
+        snprintf(mainMenu.submenu[3].text, 128, "Password: ••••••••");
+    } else {
+        snprintf(mainMenu.submenu[3].text, 128, "Password: Not set");
+    }
+    mainMenu.submenu[3].index = 3;
+    mainMenu.submenu[3].handler = editPasswordHandler;
+    
+    // Item 4: Read Column
+    mainMenu.submenu[4].type = 0;
+    mainMenu.submenu[4].text = (char *)malloc(128);
+    snprintf(mainMenu.submenu[4].text, 128, "Read Status Column: %s", settings.readColumn);
+    mainMenu.submenu[4].index = 4;
+    mainMenu.submenu[4].handler = editReadColumnHandler;
+    
+    // Item 5: Read Date Column
+    mainMenu.submenu[5].type = 0;
+    mainMenu.submenu[5].text = (char *)malloc(128);
+    snprintf(mainMenu.submenu[5].text, 128, "Read Date Column: %s", settings.readDateColumn);
+    mainMenu.submenu[5].index = 5;
+    mainMenu.submenu[5].handler = editReadDateColumnHandler;
+    
+    // Item 6: Favorite Column
+    mainMenu.submenu[6].type = 0;
+    mainMenu.submenu[6].text = (char *)malloc(128);
+    snprintf(mainMenu.submenu[6].text, 128, "Favorite Column: %s", settings.favoriteColumn);
+    mainMenu.submenu[6].index = 6;
+    mainMenu.submenu[6].handler = editFavoriteColumnHandler;
+    
+    // Item 7: Input Folder
+    mainMenu.submenu[7].type = 0;
+    mainMenu.submenu[7].text = (char *)malloc(300);
+    snprintf(mainMenu.submenu[7].text, 300, "Input Folder: %s", settings.inputFolder);
+    mainMenu.submenu[7].index = 7;
+    mainMenu.submenu[7].handler = editInputFolderHandler;
+    
+    // Terminator
+    mainMenu.submenu[8].type = 0;
+    mainMenu.submenu[8].text = NULL;
+}
+
+void freeMainMenu() {
+    if (mainMenu.submenu) {
+        for (int i = 0; i < mainMenu.n; i++) {
+            if (mainMenu.submenu[i].text) {
+                free(mainMenu.submenu[i].text);
+            }
+        }
+        free(mainMenu.submenu);
+        mainMenu.submenu = NULL;
+    }
 }
 
 // ============================================================================
 // EVENT HANDLING
 // ============================================================================
 
-int getItemIndexAtY(int y) {
-    int startY = STATUS_BAR_HEIGHT + TITLE_BAR_HEIGHT + 20;
-    
-    for (int i = 0; i < FIELD_COUNT; i++) {
-        int itemY = startY + i * ITEM_HEIGHT;
-        if (y >= itemY && y < itemY + ITEM_HEIGHT) {
-            return i;
-        }
-    }
-    
-    return -1;
-}
-
-bool isHomeIconClicked(int x, int y) {
-    int iconY = STATUS_BAR_HEIGHT;
-    return (x >= 0 && x <= HOME_ICON_SIZE + PADDING * 2 &&
-            y >= iconY && y <= iconY + TITLE_BAR_HEIGHT);
-}
-
-void handleItemClick(int index) {
-    UIField *field = &uiFields[index];
-    
-    if (field->isToggle) {
-        // Toggle connection
-        settings.connectionEnabled = !settings.connectionEnabled;
-        saveSettings();
-        drawUI();
-    } else if (field->isFolder) {
-        // Open folder selector
-        currentEditField = index;
-        char buffer[256];
-        strncpy(buffer, field->value, sizeof(buffer) - 1);
-        buffer[sizeof(buffer) - 1] = '\0';
-        OpenDirectorySelector(field->label, buffer, sizeof(buffer), folderCallback);
-    } else {
-        // Open keyboard
-        currentEditField = index;
-        char buffer[256];
-        if (field->value) {
-            strncpy(buffer, field->value, sizeof(buffer) - 1);
-            buffer[sizeof(buffer) - 1] = '\0';
-        } else {
-            buffer[0] = '\0';
-        }
-        
-        int keyboardType = (index == FIELD_PORT) ? KBD_NUMERIC : KBD_NORMAL;
-        OpenKeyboard(field->label, buffer, field->maxLen - 1, keyboardType, keyboardCallback);
-    }
-}
-
 int mainEventHandler(int type, int par1, int par2) {
     switch (type) {
         case EVT_INIT:
-            screenWidth = ScreenWidth();
-            screenHeight = ScreenHeight();
-            
-            titleFont = OpenFont("LiberationSans-Bold", 28, 1);
-            labelFont = OpenFont("LiberationSans", 26, 1);
-            valueFont = OpenFont("LiberationSans", 24, 1);
-            
             loadSettings();
-            initUIFields();
-            drawUI();
+            createMainMenu();
+            
+            // Open menu with title
+            OpenMenu(&mainMenu, 0, 0, 0, "CALIBRE COMPANION", NULL);
             break;
             
         case EVT_SHOW:
-            drawUI();
-            break;
-            
-        case EVT_POINTERUP:
-            // Check home icon
-            if (isHomeIconClicked(par1, par2)) {
-                CloseApp();
-                return 1;
-            }
-            
-            // Check list items
-            int itemIndex = getItemIndexAtY(par2);
-            if (itemIndex >= 0) {
-                handleItemClick(itemIndex);
-                return 1;
-            }
+            // Reopen menu if needed
             break;
             
         case EVT_KEYPRESS:
@@ -372,9 +337,7 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
             
         case EVT_EXIT:
-            if (titleFont) CloseFont(titleFont);
-            if (labelFont) CloseFont(labelFont);
-            if (valueFont) CloseFont(valueFont);
+            freeMainMenu();
             break;
     }
     
