@@ -14,7 +14,6 @@ static const char *KEY_PASSWORD = "password";
 static const char *KEY_READ_COLUMN = "read_column";
 static const char *KEY_READ_DATE_COLUMN = "read_date_column";
 static const char *KEY_FAVORITE_COLUMN = "favorite_column";
-static const char *KEY_INPUT_FOLDER = "input_folder";
 static const char *KEY_CONNECTION_ENABLED = "connection_enabled";
 
 // Default values
