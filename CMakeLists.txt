@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(calibre-companion)
+project(connect-to-calibre)
 
 # Установка стандарта C++
 set(CMAKE_CXX_STANDARD 11)
