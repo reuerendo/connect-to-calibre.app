@@ -2,6 +2,7 @@
 #define CALIBRE_PROTOCOL_H
 
 #include "network.h"
+#include "book_manager.h" // Добавлен инклюд для BookManager
 #include <string>
 #include <functional>
 
@@ -10,7 +11,8 @@ struct json_object;
 
 class CalibreProtocol {
 public:
-    CalibreProtocol(NetworkManager* network);
+    // Исправлен конструктор: теперь принимает BookManager*
+    CalibreProtocol(NetworkManager* network, BookManager* bookManager);
     ~CalibreProtocol();
     
     // Connection lifecycle
@@ -24,6 +26,7 @@ public:
     
 private:
     NetworkManager* network;
+    BookManager* bookManager; // Добавлена переменная-член
     bool connected;
     std::string errorMessage;
     
@@ -31,6 +34,12 @@ private:
     std::string deviceUuid;
     std::string deviceName;
     std::string appVersion;
+
+    // State for receiving files
+    std::string currentBookLpath;
+    long long currentBookLength;
+    long long currentBookReceived;
+    void* currentBookFile; // FILE* handle
     
     // Protocol handlers
     bool handleGetInitializationInfo(json_object* args);
@@ -59,6 +68,10 @@ private:
     std::string jsonToString(json_object* obj);
     json_object* parseJSON(const std::string& jsonStr);
     void freeJSON(json_object* obj);
+    
+    // Metadata conversion
+    BookMetadata jsonToMetadata(json_object* obj);
+    json_object* metadataToJson(const BookMetadata& metadata);
 };
 
 #endif // CALIBRE_PROTOCOL_H
