@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include <unistd.h>
 
 // Custom event for safe UI updates from thread
 #define EVT_USER_UPDATE 20001
@@ -84,6 +85,7 @@ static CalibreProtocol* protocol = NULL;
 static pthread_t connectionThread;
 static bool isConnecting = false;
 static bool shouldStop = false;
+static volatile bool exitRequested = false;
 
 // Forward declaration
 int mainEventHandler(int type, int par1, int par2);
@@ -365,8 +367,14 @@ void showMainScreen() {
     );
 }
 
-void cleanExit() {
-    logMsg("Clean exit initiated");
+void performExit() {
+    if (exitRequested) {
+        logMsg("Exit already in progress, ignoring");
+        return;
+    }
+    
+    exitRequested = true;
+    logMsg("Performing exit");
     
     // Stop connection thread
     stopConnection();
@@ -378,12 +386,26 @@ void cleanExit() {
     // Save and close config
     saveAndCloseConfig();
     
-    // Close log before exit
+    // Cleanup resources
+    if (protocol) {
+        delete protocol;
+        protocol = NULL;
+    }
+    if (networkManager) {
+        delete networkManager;
+        networkManager = NULL;
+    }
+    if (bookManager) {
+        delete bookManager;
+        bookManager = NULL;
+    }
+    
+    // Close log
     closeLog();
     
-    // Exit from InkViewMain loop
-    logMsg("Calling LeaveInkViewMain...");
-    LeaveInkViewMain();
+    // Force exit the process
+    logMsg("Calling _exit(0)");
+    _exit(0);
 }
 
 int mainEventHandler(int type, int par1, int par2) {
@@ -412,33 +434,33 @@ int mainEventHandler(int type, int par1, int par2) {
         case EVT_KEYPRESS:
             if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV) {
                 logMsg("KEY_BACK pressed - Exiting");
-                cleanExit();
-                return 1;
+                performExit();
+                return 0;
             }
             if (par1 == IV_KEY_HOME || par1 == IV_KEY_MENU) {
                 logMsg("KEY_HOME/MENU pressed - Exiting");
-                cleanExit();
-                return 1;
+                performExit();
+                return 0;
             }
             break;
 
         case EVT_EXIT:
             logMsg("EVT_EXIT received");
-            cleanExit();
-            return 1;
+            performExit();
+            return 0;
             
         case EVT_BACKGROUND:
             logMsg("EVT_BACKGROUND detected. Exiting.");
-            cleanExit();
-            return 1;
+            performExit();
+            return 0;
 
         case EVT_PANEL:
         case EVT_PANEL_ICON:
         case EVT_PANEL_TASKLIST:
         case EVT_PANEL_OBREEY_SYNC:
             logMsg("Panel Event detected (%d). Exiting.", type);
-            cleanExit();
-            return 1;
+            performExit();
+            return 0;
     }
     
     return 0;
@@ -447,14 +469,8 @@ int mainEventHandler(int type, int par1, int par2) {
 int main(int argc, char *argv[]) {
     InkViewMain(mainEventHandler);
     
-    // Cleanup after InkViewMain exits
-    logMsg("InkViewMain exited, cleaning up...");
-    
-    if (protocol) delete protocol;
-    if (networkManager) delete networkManager;
-    if (bookManager) delete bookManager;
-    
-    closeLog();
+    // This code should never be reached due to _exit(0)
+    logMsg("After InkViewMain - this should not happen");
     
     return 0;
 }
