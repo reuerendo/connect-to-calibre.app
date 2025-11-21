@@ -7,8 +7,9 @@
 #include <sstream>
 #include <iomanip>
 
-CalibreProtocol::CalibreProtocol(NetworkManager* net) 
-    : network(net), connected(false) {
+CalibreProtocol::CalibreProtocol(NetworkManager* net, BookManager* bookMgr) 
+    : network(net), bookManager(bookMgr), connected(false),
+      currentBookLength(0), currentBookReceived(0), currentBookFile(nullptr) {
     deviceName = "PocketBook InkPad 4";
     appVersion = "1.0.0";
 }
@@ -23,43 +24,25 @@ std::string CalibreProtocol::getPasswordHash(const std::string& password,
         return "";
     }
     
-    // Calibre does: SHA1(password + challenge) as UTF-8 strings
     SHA_CTX ctx;
     SHA1_Init(&ctx);
-    
-    // First add password bytes
     SHA1_Update(&ctx, password.c_str(), password.length());
-    
-    // Then add challenge bytes
     SHA1_Update(&ctx, challenge.c_str(), challenge.length());
     
     unsigned char hash[SHA_DIGEST_LENGTH];
     SHA1_Final(hash, &ctx);
     
-    // Convert to hex string
     std::stringstream ss;
     for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
         ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
     }
     
-    std::string result = ss.str();
-    
-    // Debug output
-    FILE* logFile = fopen("/mnt/ext1/system/calibre-connect.log", "a");
-    if (logFile) {
-        fprintf(logFile, "[HASH] Password length: %zu, Challenge: '%s', Hash: '%s'\n",
-                password.length(), challenge.c_str(), result.c_str());
-        fflush(logFile);
-        fclose(logFile);
-    }
-    
-    return result;
+    return ss.str();
 }
 
 json_object* CalibreProtocol::createDeviceInfo() {
     json_object* info = json_object_new_object();
     
-    // Get supported extensions
     json_object* extensions = json_object_new_array();
     const char* supportedFormats[] = {
         "epub", "pdf", "mobi", "azw3", "fb2", "txt", "djvu", "cbz", "cbr"
@@ -69,7 +52,6 @@ json_object* CalibreProtocol::createDeviceInfo() {
         json_object_array_add(extensions, json_object_new_string(supportedFormats[i]));
     }
     
-    // Extension path lengths
     json_object* pathLengths = json_object_new_object();
     for (size_t i = 0; i < sizeof(supportedFormats) / sizeof(supportedFormats[0]); i++) {
         json_object_object_add(pathLengths, supportedFormats[i], 
@@ -102,7 +84,6 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
     CalibreOpcode opcode;
     std::string jsonData;
     
-    // Wait for GET_INITIALIZATION_INFO
     if (!network->receiveJSON(opcode, jsonData)) {
         errorMessage = "Failed to receive initialization request";
         return false;
@@ -119,22 +100,18 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
         return false;
     }
     
-    // Get password challenge if present
     json_object* challengeObj = NULL;
     json_object_object_get_ex(request, "passwordChallenge", &challengeObj);
     std::string challenge = challengeObj ? json_object_get_string(challengeObj) : "";
     
-    // Create response
     json_object* response = createDeviceInfo();
     
-    // Add password hash if challenge provided
     if (!challenge.empty()) {
         std::string hash = getPasswordHash(password, challenge);
         json_object_object_add(response, "passwordHash", 
                               json_object_new_string(hash.c_str()));
     }
     
-    // Send response
     std::string responseStr = jsonToString(response);
     bool success = network->sendJSON(OK, responseStr.c_str());
     
@@ -146,13 +123,11 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
         return false;
     }
     
-    // Wait for next message - could be GET_DEVICE_INFORMATION or DISPLAY_MESSAGE (error)
     if (!network->receiveJSON(opcode, jsonData)) {
         errorMessage = "Failed to receive response after initialization";
         return false;
     }
     
-    // Check for password error message
     if (opcode == DISPLAY_MESSAGE) {
         json_object* msg = parseJSON(jsonData);
         if (msg) {
@@ -170,18 +145,15 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
     }
     
     if (opcode != GET_DEVICE_INFORMATION) {
-        errorMessage = "Unexpected opcode after initialization: " + std::to_string((int)opcode);
+        errorMessage = "Unexpected opcode after initialization";
         return false;
     }
     
-    // Send device information
     json_object* deviceInfo = json_object_new_object();
     json_object* deviceData = json_object_new_object();
     
-    // Generate or load device UUID
     const char* uuid = ReadString(GetGlobalConfig(), "calibre_device_uuid", "");
     if (strlen(uuid) == 0) {
-        // Generate new UUID
         char uuidBuf[64];
         srand(time(NULL));
         snprintf(uuidBuf, sizeof(uuidBuf), "%08x-%04x-%04x-%04x-%012llx",
@@ -225,21 +197,10 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
         std::string jsonData;
         
         if (!network->receiveJSON(opcode, jsonData)) {
-            if (logFile) {
-                fprintf(logFile, "[PROTOCOL] Failed to receive message\n");
-                fflush(logFile);
-            }
-            // Check if this is normal disconnection
-            if (!network->isConnected()) {
-                if (logFile) {
-                    fprintf(logFile, "[PROTOCOL] Connection closed normally\n");
-                    fflush(logFile);
-                }
-                connected = false;
-            } else {
+            if (network->isConnected()) {
                 errorMessage = "Connection lost";
-                connected = false;
             }
+            connected = false;
             break;
         }
         
@@ -250,13 +211,6 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
         
         json_object* args = parseJSON(jsonData);
         if (!args) {
-            if (logFile) {
-                fprintf(logFile, "[PROTOCOL] Failed to parse JSON\n");
-                fflush(logFile);
-            }
-            errorMessage = "Failed to parse message";
-            
-            // Send error response and continue
             sendErrorResponse("Failed to parse request");
             continue;
         }
@@ -266,96 +220,70 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
         
         switch (opcode) {
             case SET_CALIBRE_DEVICE_INFO:
-                if (logFile) fprintf(logFile, "[PROTOCOL] Handling SET_CALIBRE_DEVICE_INFO\n");
                 handled = handleSetCalibreInfo(args);
                 statusCallback("Received device info");
                 break;
                 
             case FREE_SPACE:
-                if (logFile) fprintf(logFile, "[PROTOCOL] Handling FREE_SPACE\n");
                 handled = handleFreeSpace(args);
                 statusCallback("Sent free space info");
                 break;
                 
             case TOTAL_SPACE:
-                if (logFile) fprintf(logFile, "[PROTOCOL] Handling TOTAL_SPACE\n");
                 handled = handleTotalSpace(args);
                 statusCallback("Sent total space info");
                 break;
                 
             case SET_LIBRARY_INFO:
-                if (logFile) fprintf(logFile, "[PROTOCOL] Handling SET_LIBRARY_INFO\n");
                 handled = handleSetLibraryInfo(args);
                 statusCallback("Received library info");
                 break;
                 
             case GET_BOOK_COUNT:
-                if (logFile) fprintf(logFile, "[PROTOCOL] Handling GET_BOOK_COUNT\n");
                 handled = handleGetBookCount(args);
                 statusCallback("Sent book count");
                 break;
                 
             case SEND_BOOKLISTS:
-                if (logFile) fprintf(logFile, "[PROTOCOL] Handling SEND_BOOKLISTS\n");
                 handled = handleSendBooklists(args);
                 statusCallback("Processing booklists");
                 break;
                 
             case SEND_BOOK:
-                if (logFile) fprintf(logFile, "[PROTOCOL] Handling SEND_BOOK\n");
                 handled = handleSendBook(args);
                 statusCallback("Receiving book");
                 break;
                 
             case SEND_BOOK_METADATA:
-                if (logFile) fprintf(logFile, "[PROTOCOL] Handling SEND_BOOK_METADATA\n");
                 handled = handleSendBookMetadata(args);
                 statusCallback("Received book metadata");
                 break;
                 
             case DELETE_BOOK:
-                if (logFile) fprintf(logFile, "[PROTOCOL] Handling DELETE_BOOK\n");
                 handled = handleDeleteBook(args);
                 statusCallback("Deleted book");
                 break;
                 
             case GET_BOOK_FILE_SEGMENT:
-                if (logFile) fprintf(logFile, "[PROTOCOL] Handling GET_BOOK_FILE_SEGMENT\n");
                 handled = handleGetBookFileSegment(args);
                 statusCallback("Sent book file");
                 break;
                 
             case DISPLAY_MESSAGE:
-                if (logFile) fprintf(logFile, "[PROTOCOL] Handling DISPLAY_MESSAGE\n");
                 handled = handleDisplayMessage(args);
                 break;
                 
             case NOOP: {
-                if (logFile) fprintf(logFile, "[PROTOCOL] Handling NOOP\n");
                 handled = handleNoop(args);
-                // Check if we should disconnect
                 json_object* ejectingObj = NULL;
                 json_object_object_get_ex(args, "ejecting", &ejectingObj);
                 if (ejectingObj && json_object_get_boolean(ejectingObj)) {
-                    if (logFile) fprintf(logFile, "[PROTOCOL] Received ejecting NOOP\n");
                     shouldDisconnect = true;
                 }
                 break;
             }
                 
-            case OK:
-            case SET_CALIBRE_DEVICE_NAME:
-            case GET_DEVICE_INFORMATION:
-            case GET_INITIALIZATION_INFO:
-            case BOOK_DONE:
-            case GET_BOOK_METADATA:
-            case CALIBRE_BUSY:
-            case ERROR_OPCODE:
-                if (logFile) {
-                    fprintf(logFile, "[PROTOCOL] Unexpected opcode: %d\n", (int)opcode);
-                    fflush(logFile);
-                }
-                errorMessage = "Unexpected opcode: " + std::to_string((int)opcode);
+            default:
                 sendErrorResponse("Unexpected opcode");
                 handled = true;
                 break;
@@ -366,56 +294,35 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
         if (shouldDisconnect) {
             connected = false;
             if (logFile) {
-                fprintf(logFile, "[PROTOCOL] Clean disconnect requested by calibre\n");
+                fprintf(logFile, "[PROTOCOL] Clean disconnect\n");
                 fflush(logFile);
                 fclose(logFile);
             }
             return;
         }
-        
-        if (!handled) {
-            if (logFile) {
-                fprintf(logFile, "[PROTOCOL] Handler failed: %s\n", errorMessage.c_str());
-                fflush(logFile);
-            }
-            statusCallback("Error: " + errorMessage);
-            // Don't disconnect on handler errors, Calibre will retry
-        }
-        
-        if (logFile) {
-            fprintf(logFile, "[PROTOCOL] Message processed\n");
-            fflush(logFile);
-        }
     }
     
     if (logFile) {
-        fprintf(logFile, "[PROTOCOL] Message loop ended\n");
-        fflush(logFile);
         fclose(logFile);
     }
 }
 
 void CalibreProtocol::disconnect() {
     if (connected) {
-        FILE* logFile = fopen("/mnt/ext1/system/calibre-connect.log", "a");
-        if (logFile) {
-            fprintf(logFile, "[PROTOCOL] Disconnect called, sending final NOOP\n");
-            fflush(logFile);
-            fclose(logFile);
-        }
-        
-        // Send final NOOP with empty data - calibre expects this
         json_object* noopData = json_object_new_object();
         std::string noopStr = jsonToString(noopData);
         network->sendJSON(OK, noopStr.c_str());
         freeJSON(noopData);
-        
         connected = false;
+    }
+    
+    if (currentBookFile) {
+        iv_fclose(currentBookFile);
+        currentBookFile = nullptr;
     }
 }
 
 bool CalibreProtocol::handleSetCalibreInfo(json_object* args) {
-    // Just acknowledge - we don't need to do anything with this
     json_object* response = json_object_new_object();
     bool result = sendOKResponse(response);
     freeJSON(response);
@@ -457,7 +364,6 @@ bool CalibreProtocol::handleFreeSpace(json_object* args) {
 }
 
 bool CalibreProtocol::handleSetLibraryInfo(json_object* args) {
-    // Just acknowledge
     json_object* response = json_object_new_object();
     bool result = sendOKResponse(response);
     freeJSON(response);
@@ -465,61 +371,271 @@ bool CalibreProtocol::handleSetLibraryInfo(json_object* args) {
 }
 
 bool CalibreProtocol::handleGetBookCount(json_object* args) {
-    // TODO: Get actual book count from database
+    int count = bookManager->getBookCount();
+    
     json_object* response = json_object_new_object();
     json_object_object_add(response, "willStream", json_object_new_boolean(true));
     json_object_object_add(response, "willScan", json_object_new_boolean(true));
-    json_object_object_add(response, "count", json_object_new_int(0));
+    json_object_object_add(response, "count", json_object_new_int(count));
     
     bool result = sendOKResponse(response);
     freeJSON(response);
+    
+    // If we have books, stream their metadata
+    if (count > 0) {
+        std::vector<BookMetadata> books = bookManager->getAllBooks();
+        for (const auto& book : books) {
+            json_object* bookJson = metadataToJson(book);
+            std::string bookStr = jsonToString(bookJson);
+            network->sendJSON(OK, bookStr.c_str());
+            freeJSON(bookJson);
+        }
+    }
+    
     return result;
 }
 
 bool CalibreProtocol::handleSendBooklists(json_object* args) {
-    // TODO: Implement collection sync
+    // Get collections data
+    json_object* collectionsObj = NULL;
+    if (json_object_object_get_ex(args, "collections", &collectionsObj)) {
+        std::map<std::string, std::vector<std::string>> collections;
+        json_object_object_foreach(collectionsObj, key, val) {
+            std::vector<std::string> lpaths;
+            int arrayLen = json_object_array_length(val);
+            for (int i = 0; i < arrayLen; i++) {
+                json_object* lpathObj = json_object_array_get_idx(val, i);
+                lpaths.push_back(json_object_get_string(lpathObj));
+            }
+            collections[key] = lpaths;
+        }
+        bookManager->updateCollections(collections);
+    }
+    
+    // Wait for metadata updates
+    json_object* countObj = NULL;
+    if (!json_object_object_get_ex(args, "count", &countObj)) {
+        return true;
+    }
+    
+    int count = json_object_get_int(countObj);
     return true;
 }
 
+BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
+    BookMetadata metadata;
+    
+    json_object* val = NULL;
+    
+    if (json_object_object_get_ex(obj, "uuid", &val))
+        metadata.uuid = json_object_get_string(val);
+    if (json_object_object_get_ex(obj, "title", &val))
+        metadata.title = json_object_get_string(val);
+    if (json_object_object_get_ex(obj, "authors", &val))
+        metadata.authors = json_object_get_string(val);
+    if (json_object_object_get_ex(obj, "lpath", &val))
+        metadata.lpath = json_object_get_string(val);
+    if (json_object_object_get_ex(obj, "series", &val))
+        metadata.series = json_object_get_string(val);
+    if (json_object_object_get_ex(obj, "series_index", &val))
+        metadata.seriesIndex = json_object_get_int(val);
+    if (json_object_object_get_ex(obj, "publisher", &val))
+        metadata.publisher = json_object_get_string(val);
+    if (json_object_object_get_ex(obj, "pubdate", &val))
+        metadata.pubdate = json_object_get_string(val);
+    if (json_object_object_get_ex(obj, "last_modified", &val))
+        metadata.lastModified = json_object_get_string(val);
+    if (json_object_object_get_ex(obj, "tags", &val))
+        metadata.tags = json_object_get_string(val);
+    if (json_object_object_get_ex(obj, "comments", &val))
+        metadata.comments = json_object_get_string(val);
+    if (json_object_object_get_ex(obj, "size", &val))
+        metadata.size = json_object_get_int64(val);
+    
+    return metadata;
+}
+
+json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
+    json_object* obj = json_object_new_object();
+    
+    json_object_object_add(obj, "uuid", json_object_new_string(metadata.uuid.c_str()));
+    json_object_object_add(obj, "title", json_object_new_string(metadata.title.c_str()));
+    json_object_object_add(obj, "authors", json_object_new_string(metadata.authors.c_str()));
+    json_object_object_add(obj, "lpath", json_object_new_string(metadata.lpath.c_str()));
+    json_object_object_add(obj, "last_modified", json_object_new_string(metadata.lastModified.c_str()));
+    json_object_object_add(obj, "size", json_object_new_int64(metadata.size));
+    
+    return obj;
+}
+
 bool CalibreProtocol::handleSendBook(json_object* args) {
-    // TODO: Implement book receiving
+    // Parse book metadata
+    json_object* metadataObj = NULL;
+    json_object* lpathObj = NULL;
+    json_object* lengthObj = NULL;
+    
+    if (!json_object_object_get_ex(args, "lpath", &lpathObj) ||
+        !json_object_object_get_ex(args, "length", &lengthObj) ||
+        !json_object_object_get_ex(args, "metadata", &metadataObj)) {
+        return sendErrorResponse("Missing required fields");
+    }
+    
+    currentBookLpath = json_object_get_string(lpathObj);
+    currentBookLength = json_object_get_int64(lengthObj);
+    currentBookReceived = 0;
+    
+    BookMetadata metadata = jsonToMetadata(metadataObj);
+    metadata.lpath = currentBookLpath;
+    metadata.size = currentBookLength;
+    
+    // Send OK response to start receiving
     json_object* response = json_object_new_object();
-    bool result = sendOKResponse(response);
+    json_object_object_add(response, "lpath", json_object_new_string(currentBookLpath.c_str()));
+    
+    if (!sendOKResponse(response)) {
+        freeJSON(response);
+        return false;
+    }
     freeJSON(response);
-    return result;
+    
+    // Open file for writing
+    std::string filePath = bookManager->getBookFilePath(currentBookLpath);
+    
+    // Create directories
+    size_t pos = filePath.rfind('/');
+    if (pos != std::string::npos) {
+        std::string dir = filePath.substr(0, pos);
+        iv_buildpath(dir.c_str());
+    }
+    
+    currentBookFile = iv_fopen(filePath.c_str(), "wb");
+    if (!currentBookFile) {
+        return sendErrorResponse("Failed to create book file");
+    }
+    
+    // Receive binary data
+    const size_t CHUNK_SIZE = 4096;
+    std::vector<char> buffer(CHUNK_SIZE);
+    
+    while (currentBookReceived < currentBookLength) {
+        size_t toRead = std::min((size_t)(currentBookLength - currentBookReceived), CHUNK_SIZE);
+        
+        if (!network->receiveBinaryData(buffer.data(), toRead)) {
+            iv_fclose(currentBookFile);
+            currentBookFile = nullptr;
+            return false;
+        }
+        
+        size_t written = fwrite(buffer.data(), 1, toRead, currentBookFile);
+        if (written != toRead) {
+            iv_fclose(currentBookFile);
+            currentBookFile = nullptr;
+            return sendErrorResponse("Failed to write book data");
+        }
+        
+        currentBookReceived += toRead;
+    }
+    
+    iv_fclose(currentBookFile);
+    currentBookFile = nullptr;
+    
+    // Add book to database
+    bookManager->addBook(metadata);
+    
+    return true;
 }
 
 bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
-    // TODO: Implement metadata sync
+    json_object* dataObj = NULL;
+    if (!json_object_object_get_ex(args, "data", &dataObj)) {
+        return sendErrorResponse("Missing metadata");
+    }
+    
+    BookMetadata metadata = jsonToMetadata(dataObj);
+    
+    if (bookManager->hasMetadataChanged(metadata)) {
+        bookManager->updateMetadataCache(metadata);
+    }
+    
     return true;
 }
 
 bool CalibreProtocol::handleDeleteBook(json_object* args) {
-    // TODO: Implement book deletion
-    json_object* response = json_object_new_object();
-    json_object_object_add(response, "uuid", json_object_new_string(""));
+    json_object* lpathsObj = NULL;
+    if (!json_object_object_get_ex(args, "lpaths", &lpathsObj)) {
+        return sendErrorResponse("Missing lpaths");
+    }
     
-    bool result = sendOKResponse(response);
-    freeJSON(response);
-    return result;
+    int count = json_object_array_length(lpathsObj);
+    for (int i = 0; i < count; i++) {
+        json_object* lpathObj = json_object_array_get_idx(lpathsObj, i);
+        std::string lpath = json_object_get_string(lpathObj);
+        
+        BookMetadata metadata;
+        if (bookManager->getBook("", metadata)) {  // Need to find by lpath
+            bookManager->deleteBook(metadata.uuid);
+            
+            json_object* response = json_object_new_object();
+            json_object_object_add(response, "uuid", 
+                                  json_object_new_string(metadata.uuid.c_str()));
+            sendOKResponse(response);
+            freeJSON(response);
+        }
+    }
+    
+    return true;
 }
 
 bool CalibreProtocol::handleGetBookFileSegment(json_object* args) {
-    // TODO: Implement sending books to calibre
+    json_object* lpathObj = NULL;
+    if (!json_object_object_get_ex(args, "lpath", &lpathObj)) {
+        return sendErrorResponse("Missing lpath");
+    }
+    
+    std::string lpath = json_object_get_string(lpathObj);
+    std::string filePath = bookManager->getBookFilePath(lpath);
+    
+    FILE* file = iv_fopen(filePath.c_str(), "rb");
+    if (!file) {
+        return sendErrorResponse("Failed to open book file");
+    }
+    
+    fseek(file, 0, SEEK_END);
+    long fileLength = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    
     json_object* response = json_object_new_object();
-    bool result = sendOKResponse(response);
+    json_object_object_add(response, "fileLength", json_object_new_int64(fileLength));
+    
+    if (!sendOKResponse(response)) {
+        freeJSON(response);
+        iv_fclose(file);
+        return false;
+    }
     freeJSON(response);
-    return result;
+    
+    // Send file data
+    const size_t CHUNK_SIZE = 4096;
+    std::vector<char> buffer(CHUNK_SIZE);
+    
+    while (!feof(file)) {
+        size_t read = fread(buffer.data(), 1, CHUNK_SIZE, file);
+        if (read > 0) {
+            if (!network->sendBinaryData(buffer.data(), read)) {
+                iv_fclose(file);
+                return false;
+            }
+        }
+    }
+    
+    iv_fclose(file);
+    return true;
 }
 
 bool CalibreProtocol::handleDisplayMessage(json_object* args) {
-    json_object* kindObj = NULL;
     json_object* messageObj = NULL;
     
-    json_object_object_get_ex(args, "messageKind", &kindObj);
-    json_object_object_get_ex(args, "message", &messageObj);
-    
-    if (messageObj) {
+    if (json_object_object_get_ex(args, "message", &messageObj)) {
         Message(ICON_INFORMATION, "Calibre", 
                 json_object_get_string(messageObj), 3000);
     }
@@ -562,7 +678,6 @@ std::string CalibreProtocol::jsonToString(json_object* obj) {
 }
 
 json_object* CalibreProtocol::parseJSON(const std::string& jsonStr) {
-    // Skip opcode part and get the data object
     size_t dataStart = jsonStr.find(',');
     if (dataStart == std::string::npos) {
         return NULL;
