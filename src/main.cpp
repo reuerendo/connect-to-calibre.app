@@ -362,11 +362,19 @@ void saveAndCloseConfig() {
 }
 
 void configSaveHandler() {
+    logMsg("Config save handler called");
     if (appConfig) SaveConfig(appConfig);
 }
 
 void configItemChangedHandler(char *name) {
+    logMsg("Config item changed: %s", name ? name : "NULL");
     if (appConfig) SaveConfig(appConfig);
+}
+
+void configCloseHandler() {
+    logMsg("Config editor closed by user");
+    // User closed the config editor - exit the application
+    performExit();
 }
 
 void showMainScreen() {
@@ -375,7 +383,7 @@ void showMainScreen() {
         (char *)"Connect to Calibre",
         appConfig,
         configItems,
-        configSaveHandler,
+        configCloseHandler,  // This is called when user closes the editor
         configItemChangedHandler
     );
 }
@@ -445,20 +453,16 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
             
         case EVT_KEYPRESS:
+            // Handle hardware keys
             if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV) {
-                logMsg("KEY_BACK pressed - Exiting");
-                performExit();
-                return 1;
-            }
-            if (par1 == IV_KEY_HOME || par1 == IV_KEY_MENU) {
-                logMsg("KEY_HOME/MENU pressed - Exiting");
+                logMsg("Hardware KEY_BACK pressed - Exiting");
                 performExit();
                 return 1;
             }
             break;
 
         case EVT_EXIT:
-            logMsg("EVT_EXIT received - cleaning up");
+            logMsg("EVT_EXIT received");
             if (!exitRequested) {
                 exitRequested = true;
                 stopConnection();
