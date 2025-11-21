@@ -22,7 +22,7 @@ static void initNetLog() {
 
 static void logNetMsg(const char* format, ...) {
     if (!netLogFile) {
-        initNetLog(); // Try to reopen if closed
+        initNetLog();
         if (!netLogFile) return;
     }
     
@@ -236,21 +236,90 @@ bool NetworkManager::connectToServer(const std::string& host, int port) {
         return false;
     }
     
-    // Set connection timeout
-    struct timeval timeout;
-    timeout.tv_sec = 5;
-    timeout.tv_usec = 0;
-    setsockopt(socketFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(socketFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-    
     logNetMsg("Attempting connection...");
     
-    if (connect(socketFd, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
-        logNetMsg("Connection failed: %s", strerror(errno));
+    // Use blocking connect with timeout using select
+    // First set socket to non-blocking
+    int flags = fcntl(socketFd, F_GETFL, 0);
+    if (flags < 0) {
+        logNetMsg("Failed to get socket flags: %s", strerror(errno));
         close(socketFd);
         socketFd = -1;
         return false;
     }
+    
+    if (fcntl(socketFd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        logNetMsg("Failed to set non-blocking: %s", strerror(errno));
+        close(socketFd);
+        socketFd = -1;
+        return false;
+    }
+    
+    // Start connection
+    int connectResult = connect(socketFd, (struct sockaddr*)&serverAddr, sizeof(serverAddr));
+    
+    if (connectResult < 0) {
+        if (errno != EINPROGRESS) {
+            logNetMsg("Connection failed immediately: %s", strerror(errno));
+            close(socketFd);
+            socketFd = -1;
+            return false;
+        }
+        
+        // Connection in progress, wait for completion
+        fd_set writefds;
+        struct timeval timeout;
+        timeout.tv_sec = 10;  // 10 second timeout
+        timeout.tv_usec = 0;
+        
+        FD_ZERO(&writefds);
+        FD_SET(socketFd, &writefds);
+        
+        int selectResult = select(socketFd + 1, NULL, &writefds, NULL, &timeout);
+        
+        if (selectResult <= 0) {
+            if (selectResult == 0) {
+                logNetMsg("Connection timeout");
+            } else {
+                logNetMsg("Select error: %s", strerror(errno));
+            }
+            close(socketFd);
+            socketFd = -1;
+            return false;
+        }
+        
+        // Check if connection succeeded
+        int error = 0;
+        socklen_t len = sizeof(error);
+        if (getsockopt(socketFd, SOL_SOCKET, SO_ERROR, &error, &len) < 0) {
+            logNetMsg("getsockopt failed: %s", strerror(errno));
+            close(socketFd);
+            socketFd = -1;
+            return false;
+        }
+        
+        if (error != 0) {
+            logNetMsg("Connection failed: %s", strerror(error));
+            close(socketFd);
+            socketFd = -1;
+            return false;
+        }
+    }
+    
+    // Set socket back to blocking mode
+    if (fcntl(socketFd, F_SETFL, flags) < 0) {
+        logNetMsg("Failed to restore blocking mode: %s", strerror(errno));
+        close(socketFd);
+        socketFd = -1;
+        return false;
+    }
+    
+    // Set receive and send timeouts
+    struct timeval timeout;
+    timeout.tv_sec = 30;
+    timeout.tv_usec = 0;
+    setsockopt(socketFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(socketFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
     
     logNetMsg("Connected successfully to %s:%d", host.c_str(), port);
     return true;
