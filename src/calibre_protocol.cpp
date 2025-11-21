@@ -215,66 +215,66 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
             continue;
         }
         
-        bool handled = false;
+        // Removed unused 'bool handled'
         bool shouldDisconnect = false;
         
         switch (opcode) {
             case SET_CALIBRE_DEVICE_INFO:
-                handled = handleSetCalibreInfo(args);
+                handleSetCalibreInfo(args);
                 statusCallback("Received device info");
                 break;
                 
             case FREE_SPACE:
-                handled = handleFreeSpace(args);
+                handleFreeSpace(args);
                 statusCallback("Sent free space info");
                 break;
                 
             case TOTAL_SPACE:
-                handled = handleTotalSpace(args);
+                handleTotalSpace(args);
                 statusCallback("Sent total space info");
                 break;
                 
             case SET_LIBRARY_INFO:
-                handled = handleSetLibraryInfo(args);
+                handleSetLibraryInfo(args);
                 statusCallback("Received library info");
                 break;
                 
             case GET_BOOK_COUNT:
-                handled = handleGetBookCount(args);
+                handleGetBookCount(args);
                 statusCallback("Sent book count");
                 break;
                 
             case SEND_BOOKLISTS:
-                handled = handleSendBooklists(args);
+                handleSendBooklists(args);
                 statusCallback("Processing booklists");
                 break;
                 
             case SEND_BOOK:
-                handled = handleSendBook(args);
+                handleSendBook(args);
                 statusCallback("Receiving book");
                 break;
                 
             case SEND_BOOK_METADATA:
-                handled = handleSendBookMetadata(args);
+                handleSendBookMetadata(args);
                 statusCallback("Received book metadata");
                 break;
                 
             case DELETE_BOOK:
-                handled = handleDeleteBook(args);
+                handleDeleteBook(args);
                 statusCallback("Deleted book");
                 break;
                 
             case GET_BOOK_FILE_SEGMENT:
-                handled = handleGetBookFileSegment(args);
+                handleGetBookFileSegment(args);
                 statusCallback("Sent book file");
                 break;
                 
             case DISPLAY_MESSAGE:
-                handled = handleDisplayMessage(args);
+                handleDisplayMessage(args);
                 break;
                 
             case NOOP: {
-                handled = handleNoop(args);
+                handleNoop(args);
                 json_object* ejectingObj = NULL;
                 json_object_object_get_ex(args, "ejecting", &ejectingObj);
                 if (ejectingObj && json_object_get_boolean(ejectingObj)) {
@@ -285,7 +285,6 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
                 
             default:
                 sendErrorResponse("Unexpected opcode");
-                handled = true;
                 break;
         }
         
@@ -413,12 +412,7 @@ bool CalibreProtocol::handleSendBooklists(json_object* args) {
     }
     
     // Wait for metadata updates
-    json_object* countObj = NULL;
-    if (!json_object_object_get_ex(args, "count", &countObj)) {
-        return true;
-    }
-    
-    int count = json_object_get_int(countObj);
+    // Removed unused 'count' variable
     return true;
 }
 
