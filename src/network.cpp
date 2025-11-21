@@ -315,8 +315,9 @@ bool NetworkManager::connectToServer(const std::string& host, int port) {
     }
     
     // Set receive and send timeouts
+    // УВЕЛИЧЕНО С 30 ДО 300 СЕКУНД (5 МИНУТ)
     struct timeval timeout;
-    timeout.tv_sec = 30;
+    timeout.tv_sec = 300;
     timeout.tv_usec = 0;
     setsockopt(socketFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(socketFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
