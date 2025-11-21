@@ -1,3 +1,6 @@
+#include <sys/stat.h>
+#include <errno.h>
+#include <vector>
 #include "calibre_protocol.h"
 #include "inkview.h"
 #include <json-c/json.h>
@@ -6,13 +9,6 @@
 #include <cstring>
 #include <sstream>
 #include <iomanip>
-
-static std::string safeGetJsonString(json_object* val) {
-    if (!val) return "";
-    if (json_object_get_type(val) == json_type_null) return "";
-    const char* str = json_object_get_string(val);
-    return str ? std::string(str) : "";
-}
 
 // Helper for logging
 static void logProto(const char* fmt, ...) {
@@ -26,6 +22,56 @@ static void logProto(const char* fmt, ...) {
         fflush(f);
         fclose(f);
     }
+}
+
+static int recursiveMkdir(const std::string& path) {
+    std::string current_path;
+    std::string path_copy = path;
+    
+    if (!path_copy.empty() && path_copy.back() == '/') {
+        path_copy.pop_back();
+    }
+
+    size_t pos = 0;
+    if (!path_copy.empty() && path_copy[0] == '/') {
+        current_path = "/";
+        pos = 1;
+    }
+
+    while (pos < path_copy.length()) {
+        size_t next_slash = path_copy.find('/', pos);
+        std::string part;
+        
+        if (next_slash == std::string::npos) {
+            part = path_copy.substr(pos);
+            pos = path_copy.length();
+        } else {
+            part = path_copy.substr(pos, next_slash - pos);
+            pos = next_slash + 1;
+        }
+        
+        if (part.empty()) continue;
+
+        if (current_path.length() > 0 && current_path.back() != '/') {
+            current_path += "/";
+        }
+        current_path += part;
+
+        if (mkdir(current_path.c_str(), 0755) != 0) {
+            if (errno != EEXIST) {
+                logProto("Failed to create directory %s: %s", current_path.c_str(), strerror(errno));
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+static std::string safeGetJsonString(json_object* val) {
+    if (!val) return "";
+    if (json_object_get_type(val) == json_type_null) return "";
+    const char* str = json_object_get_string(val);
+    return str ? std::string(str) : "";
 }
 
 CalibreProtocol::CalibreProtocol(NetworkManager* net, BookManager* bookMgr) 
@@ -546,7 +592,10 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     size_t pos = filePath.rfind('/');
     if (pos != std::string::npos) {
         std::string dir = filePath.substr(0, pos);
-        iv_buildpath(dir.c_str());
+        if (recursiveMkdir(dir) != 0) {
+            logProto("Failed to create directory structure for book");
+            return sendErrorResponse("Failed to create directory");
+        }
     }
     
     currentBookFile = iv_fopen(filePath.c_str(), "wb");
