@@ -7,6 +7,9 @@
 #include <stdarg.h>
 #include <pthread.h>
 
+// Define DEBUG_LOG macro
+#define DEBUG_LOG(fmt, ...) logMsg(fmt, ##__VA_ARGS__)
+
 // Debug logging
 static FILE* logFile = NULL;
 
@@ -263,9 +266,14 @@ void startConnection() {
         protocol = new CalibreProtocol(networkManager);
     }
     
-    // Start connection in thread
+    // Start connection in thread using pthread
     DEBUG_LOG("Creating connection thread");
-    connectionThread = std::thread(connectionThreadFunc);
+    if (pthread_create(&connectionThread, NULL, connectionThreadFunc, NULL) != 0) {
+        DEBUG_LOG("Failed to create connection thread");
+        updateConnectionStatus("Failed to start");
+        isConnecting = false;
+        return;
+    }
     DEBUG_LOG("Connection thread started");
 }
 
