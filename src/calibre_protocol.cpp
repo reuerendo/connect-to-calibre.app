@@ -81,10 +81,10 @@ CalibreProtocol::CalibreProtocol(NetworkManager* net, BookManager* bookMgr,
                                  const std::string& readDateCol, 
                                  const std::string& favCol) 
     : network(net), bookManager(bookMgr), connected(false),
-      currentBookLength(0), currentBookReceived(0), currentBookFile(nullptr),
-      readColumn(readCol), readDateColumn(readDateCol), favoriteColumn(favCol) {
+      readColumn(readCol), readDateColumn(readDateCol), favoriteColumn(favCol),
+      currentBookLength(0), currentBookReceived(0), currentBookFile(nullptr) {
     
-    deviceName = "PocketBook InkPad 4"; // Или другое имя
+    deviceName = "PocketBook InkPad 4";
     appVersion = "1.0.0";
 }
 
@@ -556,43 +556,12 @@ std::string CalibreProtocol::parseJsonStringOrArray(json_object* val) {
     return "";
 }
 
-// Structure: user_metadata -> "col_name" -> "#value#" (bool)
 static bool getUserMetadataBool(json_object* userMeta, const std::string& colName) {
     if (!userMeta || colName.empty()) return false;
     
     json_object* colObj = NULL;
     if (json_object_object_get_ex(userMeta, colName.c_str(), &colObj)) {
         json_object* valObj = NULL;
-        // Calibre stores the actual data inside "#value#"
-        if (json_object_object_get_ex(colObj, "#value#", &valObj)) {
-            return json_object_get_boolean(valObj);
-        }
-    }
-    return false;
-}
-
-// Helper to extract string (date) from Calibre's user_metadata structure
-static std::string getUserMetadataString(json_object* userMeta, const std::string& colName) {
-    if (!userMeta || colName.empty()) return "";
-    
-    json_object* colObj = NULL;
-    if (json_object_object_get_ex(userMeta, colName.c_str(), &colObj)) {
-        json_object* valObj = NULL;
-        if (json_object_object_get_ex(colObj, "#value#", &valObj)) {
-            const char* str = json_object_get_string(valObj);
-            return str ? std::string(str) : "";
-        }
-    }
-    return "";
-}
-
-static bool getUserMetadataBool(json_object* userMeta, const std::string& colName) {
-    if (!userMeta || colName.empty()) return false;
-    
-    json_object* colObj = NULL;
-    if (json_object_object_get_ex(userMeta, colName.c_str(), &colObj)) {
-        json_object* valObj = NULL;
-        // Calibre хранит значение внутри ключа "#value#"
         if (json_object_object_get_ex(colObj, "#value#", &valObj)) {
             return json_object_get_boolean(valObj);
         }
