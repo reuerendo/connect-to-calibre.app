@@ -11,7 +11,7 @@ struct BookMetadata {
     std::string uuid;
     std::string title;
     std::string authors;
-    std::string authorSort; // <-- Добавлено поле для сортировки автора
+    std::string authorSort; // Поле для сортировки (pb-db.lua)
     std::string lpath;
     std::string series;
     int seriesIndex;
@@ -47,8 +47,10 @@ public:
     // Полное сохранение (при передаче файла)
     bool addBook(const BookMetadata& metadata);
     
-    // "Тихая" синхронизация (только статусы, не меняет ts_added)
-    // Аналог PocketBookDBHandler:updateBookMetadata из pb-db.lua
+    // Метод, который отсутствовал в заголовке, но был в cpp
+    bool updateBook(const BookMetadata& metadata); 
+
+    // "Тихая" синхронизация (только статусы)
     bool updateBookSync(const BookMetadata& metadata); 
     
     bool deleteBook(const std::string& lpath);
@@ -67,7 +69,7 @@ private:
     
     int getStorageId(const std::string& filename);
     int getCurrentProfileId(sqlite3* db);
-    std::string getFirstLetter(const std::string& str); // Обновленная логика
+    std::string getFirstLetter(const std::string& str);
     
     int getOrCreateFolder(sqlite3* db, const std::string& folderPath, int storageId);
     bool processBookSettings(sqlite3* db, int book_id, const BookMetadata& metadata, int profile_id);
