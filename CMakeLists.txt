@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(calibre-companion)
+project(connect-to-calibre)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 11)
@@ -49,7 +49,7 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 # Set output name
-set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "calibre-companion.app")
+set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "connect-to-calibre.app")
 
 # Installation
 install(TARGETS ${PROJECT_NAME}
