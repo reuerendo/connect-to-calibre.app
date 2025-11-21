@@ -413,12 +413,12 @@ bool CalibreProtocol::handleSendBooklists(json_object* args) {
 
 // Helper to safely convert JSON array or string to string
 std::string CalibreProtocol::parseJsonStringOrArray(json_object* val) {
-    if (!val) return "";
+    if (!val || json_object_get_type(val) == json_type_null) return "";
     
     enum json_type type = json_object_get_type(val);
     
     if (type == json_type_string) {
-        return json_object_get_string(val);
+        return safeGetJsonString(val);
     } 
     else if (type == json_type_array) {
         std::string result;
@@ -426,8 +426,10 @@ std::string CalibreProtocol::parseJsonStringOrArray(json_object* val) {
         for (int i = 0; i < len; i++) {
             json_object* item = json_object_array_get_idx(val, i);
             if (i > 0) result += ", ";
-            if (json_object_get_type(item) == json_type_string) {
-                result += json_object_get_string(item);
+            // Безопасное получение строки, даже если это число или null
+            const char* str = json_object_get_string(item);
+            if (str) {
+                result += str;
             }
         }
         return result;
@@ -436,42 +438,54 @@ std::string CalibreProtocol::parseJsonStringOrArray(json_object* val) {
     return "";
 }
 
+static std::string safeGetJsonString(json_object* val) {
+    if (!val) return "";
+    if (json_object_get_type(val) == json_type_null) return "";
+    const char* str = json_object_get_string(val);
+    return str ? std::string(str) : "";
+}
+
 BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
     BookMetadata metadata;
-    
     json_object* val = NULL;
     
-    // Fixed parsing to handle both strings and arrays
     if (json_object_object_get_ex(obj, "uuid", &val))
-        metadata.uuid = json_object_get_string(val);
+        metadata.uuid = safeGetJsonString(val);
+    
     if (json_object_object_get_ex(obj, "title", &val))
-        metadata.title = json_object_get_string(val);
+        metadata.title = safeGetJsonString(val);
     
     if (json_object_object_get_ex(obj, "authors", &val))
         metadata.authors = parseJsonStringOrArray(val);
         
     if (json_object_object_get_ex(obj, "lpath", &val))
-        metadata.lpath = json_object_get_string(val);
+        metadata.lpath = safeGetJsonString(val);
+        
     if (json_object_object_get_ex(obj, "series", &val))
-        metadata.series = json_object_get_string(val);
+        metadata.series = safeGetJsonString(val); // <-- Здесь был вылет
+        
     if (json_object_object_get_ex(obj, "series_index", &val))
-        metadata.seriesIndex = json_object_get_int(val);
+        metadata.seriesIndex = json_object_get_int(val); // int обычно безопасен, вернет 0 для null
+        
     if (json_object_object_get_ex(obj, "publisher", &val))
-        metadata.publisher = json_object_get_string(val);
+        metadata.publisher = safeGetJsonString(val); // <-- И здесь был вылет
+        
     if (json_object_object_get_ex(obj, "pubdate", &val))
-        metadata.pubdate = json_object_get_string(val);
+        metadata.pubdate = safeGetJsonString(val);
+        
     if (json_object_object_get_ex(obj, "last_modified", &val))
-        metadata.lastModified = json_object_get_string(val);
+        metadata.lastModified = safeGetJsonString(val);
         
     if (json_object_object_get_ex(obj, "tags", &val))
         metadata.tags = parseJsonStringOrArray(val);
         
     if (json_object_object_get_ex(obj, "comments", &val))
-        metadata.comments = json_object_get_string(val);
+        metadata.comments = safeGetJsonString(val);
+        
     if (json_object_object_get_ex(obj, "size", &val))
         metadata.size = json_object_get_int64(val);
         
-    // UPDATED: Handle thumbnail array [width, height, base64_data]
+    // Обработка обложки (без изменений, тут массив)
     if (json_object_object_get_ex(obj, "thumbnail", &val)) {
         if (json_object_get_type(val) == json_type_array && json_object_array_length(val) >= 3) {
             json_object* w = json_object_array_get_idx(val, 0);
@@ -480,7 +494,7 @@ BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
             
             if (w) metadata.thumbnailWidth = json_object_get_int(w);
             if (h) metadata.thumbnailHeight = json_object_get_int(h);
-            if (data) metadata.thumbnail = json_object_get_string(data);
+            if (data) metadata.thumbnail = safeGetJsonString(data);
         }
     }
     
