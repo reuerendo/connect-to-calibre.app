@@ -561,6 +561,9 @@ BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
     
     if (json_object_object_get_ex(obj, "authors", &val))
         metadata.authors = parseJsonStringOrArray(val);
+
+    if (json_object_object_get_ex(obj, "author_sort", &val))
+        metadata.authorSort = safeGetJsonString(val);
         
     if (json_object_object_get_ex(obj, "lpath", &val))
         metadata.lpath = safeGetJsonString(val);
@@ -737,15 +740,17 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
         metadata.isRead = json_object_get_boolean(val);
     }
     
-    logProto("Updating metadata for: %s", metadata.title.c_str());
+    logProto("Syncing metadata (settings only) for: %s", metadata.title.c_str());
     
-    if (bookManager->updateBook(metadata)) {
+    if (bookManager->updateBookSync(metadata)) {
         for(auto& b : sessionBooks) {
             if (b.uuid == metadata.uuid) {
-                b = metadata;
+                b.isRead = metadata.isRead;
                 break;
             }
         }
+    } else {
+        logProto("Warning: Attempted to sync metadata for non-existent book: %s", metadata.lpath.c_str());
     }
     
     return true;
