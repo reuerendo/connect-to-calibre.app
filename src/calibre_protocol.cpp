@@ -19,20 +19,42 @@ CalibreProtocol::~CalibreProtocol() {
 
 std::string CalibreProtocol::getPasswordHash(const std::string& password, 
                                              const std::string& challenge) {
-    if (password.empty() || challenge.empty()) {
+    if (challenge.empty()) {
         return "";
     }
     
-    std::string input = password + challenge;
+    // Empty password is valid - just hash the challenge
+    SHA_CTX ctx;
+    SHA1_Init(&ctx);
+    
+    // Update with password (can be empty)
+    if (!password.empty()) {
+        SHA1_Update(&ctx, password.c_str(), password.length());
+    }
+    
+    // Update with challenge
+    SHA1_Update(&ctx, challenge.c_str(), challenge.length());
+    
     unsigned char hash[SHA_DIGEST_LENGTH];
-    SHA1((unsigned char*)input.c_str(), input.length(), hash);
+    SHA1_Final(hash, &ctx);
     
     std::stringstream ss;
     for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
         ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
     }
     
-    return ss.str();
+    std::string result = ss.str();
+    
+    // Debug output
+    FILE* logFile = fopen("/mnt/ext1/system/calibre-connect.log", "a");
+    if (logFile) {
+        fprintf(logFile, "[HASH] Password: '%s', Challenge: '%s', Hash: '%s'\n",
+                password.c_str(), challenge.c_str(), result.c_str());
+        fflush(logFile);
+        fclose(logFile);
+    }
+    
+    return result;
 }
 
 json_object* CalibreProtocol::createDeviceInfo() {
@@ -106,14 +128,11 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
     // Create response
     json_object* response = createDeviceInfo();
     
-    // Add password hash if needed
+    // Add password hash if challenge provided
     if (!challenge.empty()) {
         std::string hash = getPasswordHash(password, challenge);
         json_object_object_add(response, "passwordHash", 
                               json_object_new_string(hash.c_str()));
-    } else {
-        json_object_object_add(response, "passwordHash", 
-                              json_object_new_string(""));
     }
     
     // Send response
