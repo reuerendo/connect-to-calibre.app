@@ -299,17 +299,35 @@ bool BookManager::updateBook(const BookMetadata& metadata) {
     return addBook(metadata);
 }
 
-// Реализация processBookSettings из pb-db.lua
+// Updated processBookSettings to handle logic like pb-db.lua
 bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadata& metadata, int profileId) {
-    // В pb-db.lua логика: если нет статусов для обновления, выходим.
-    // Но при sync metadata нам, возможно, прислали сброс статуса?
-    // В Lua: if not read_lookup_name ... return. 
-    // Мы полагаемся на то, что metadata.isRead/isFavorite установлены верно вызывающим кодом.
-    
+    // Prepare values
     int completed = metadata.isRead ? 1 : 0;
     int favorite = metadata.isFavorite ? 1 : 0;
-    int cpage = metadata.isRead ? 100 : 0;
-    time_t completedTs = metadata.isRead ? time(NULL) : 0;
+    
+    // Logic from pb-db.lua: If marked read, set page to 100% (or npage)
+    int cpage = metadata.isRead ? 100 : 0; 
+    
+    // Handle Date: Parse ISO string from Calibre back to Unix Timestamp
+    time_t completedTs = 0;
+    if (!metadata.lastReadDate.empty()) {
+        // Basic parser for YYYY-MM-DDTHH:MM:SS...
+        int y, m, d, H, M, S;
+        if (sscanf(metadata.lastReadDate.c_str(), "%d-%d-%dT%d:%d:%d", &y, &m, &d, &H, &M, &S) >= 6) {
+            struct tm tm = {0};
+            tm.tm_year = y - 1900;
+            tm.tm_mon = m - 1;
+            tm.tm_mday = d;
+            tm.tm_hour = H;
+            tm.tm_min = M;
+            tm.tm_sec = S;
+            completedTs = timegm(&tm); // use timegm for UTC
+        } else {
+            completedTs = time(NULL); // Fallback
+        }
+    } else if (metadata.isRead) {
+        completedTs = time(NULL);
+    }
 
     sqlite3_stmt* stmt;
     const char* checkSql = "SELECT bookid FROM books_settings WHERE bookid = ? AND profileid = ?";
@@ -323,7 +341,12 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
     }
 
     if (exists) {
-        const char* updateSql = "UPDATE books_settings SET completed=?, favorite=?, completed_ts=?, cpage=? WHERE bookid=? AND profileid=?";
+        // We update specific fields. Note: In pb-db.lua it checks if values are different before update.
+        // Here we overwrite to ensure sync.
+        const char* updateSql = 
+            "UPDATE books_settings SET completed=?, favorite=?, completed_ts=?, cpage=? "
+            "WHERE bookid=? AND profileid=?";
+            
         if (sqlite3_prepare_v2(db, updateSql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int(stmt, 1, completed);
             sqlite3_bind_int(stmt, 2, favorite);
@@ -335,7 +358,10 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
             sqlite3_finalize(stmt);
         }
     } else {
-        const char* insertSql = "INSERT INTO books_settings (bookid, profileid, completed, favorite, completed_ts, cpage) VALUES (?, ?, ?, ?, ?, ?)";
+        const char* insertSql = 
+            "INSERT INTO books_settings (bookid, profileid, completed, favorite, completed_ts, cpage) "
+            "VALUES (?, ?, ?, ?, ?, ?)";
+            
         if (sqlite3_prepare_v2(db, insertSql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int(stmt, 1, bookId);
             sqlite3_bind_int(stmt, 2, profileId);
@@ -428,20 +454,28 @@ bool BookManager::deleteBook(const std::string& lpath) {
     return true;
 }
 
-// Реализация чтения всех книг для кэша (GET_BOOK_COUNT)
-// Используется для первичной синхронизации
+// Helper to format Unix timestamp to ISO 8601 (for Calibre)
+static std::string formatIsoTime(time_t timestamp) {
+    if (timestamp == 0) return "";
+    char buffer[32];
+    struct tm* tm_info = gmtime(&timestamp);
+    strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S+00:00", tm_info);
+    return std::string(buffer);
+}
+
 std::vector<BookMetadata> BookManager::getAllBooks() {
     std::vector<BookMetadata> books;
     sqlite3* db = openDB();
     if (!db) return books;
 
-    // Выбираем данные из books_impl и соединяем с files/folders для получения полного пути
-    // Также берем статус прочтения для текущего профиля
     int profileId = getCurrentProfileId(db);
     
+    // JOIN with books_settings to get read status and favorite status
+    // We assume completed_ts is the read date
     std::string sql = 
         "SELECT b.id, b.title, b.author, b.series, b.numinseries, b.size, b.updated, "
-        "f.filename, fo.name, bs.completed, bs.favorite "
+        "f.filename, fo.name, "
+        "bs.completed, bs.favorite, bs.completed_ts " 
         "FROM books_impl b "
         "JOIN files f ON b.id = f.book_id "
         "JOIN folders fo ON f.folder_id = fo.id "
@@ -455,6 +489,7 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
             BookMetadata meta;
             meta.dbBookId = sqlite3_column_int(stmt, 0);
             
+            // ... (Existing code for title, author, series, size) ...
             const char* title = (const char*)sqlite3_column_text(stmt, 1);
             const char* author = (const char*)sqlite3_column_text(stmt, 2);
             const char* series = (const char*)sqlite3_column_text(stmt, 3);
@@ -464,43 +499,42 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
             meta.series = series ? series : "";
             meta.seriesIndex = sqlite3_column_int(stmt, 4);
             meta.size = sqlite3_column_int64(stmt, 5);
-            
-            // Формируем LPATH
+
+            // ... (Existing code for LPATH generation) ...
             const char* filename = (const char*)sqlite3_column_text(stmt, 7);
             const char* folder = (const char*)sqlite3_column_text(stmt, 8);
-            
-            // В БД PocketBook папка хранится как полный путь /mnt/ext1/...
-            // Нам нужен относительный путь для Calibre (lpath)
             std::string fullFolder = folder ? folder : "";
             std::string fName = filename ? filename : "";
-            
             std::string fullPath = fullFolder + "/" + fName;
             
-            // Превращаем /mnt/ext1/Books/Title.epub -> Books/Title.epub
-            // так как booksDir = /mnt/ext1
             if (fullPath.find(booksDir) == 0) {
                 meta.lpath = fullPath.substr(booksDir.length());
                 if (!meta.lpath.empty() && meta.lpath[0] == '/') {
                     meta.lpath = meta.lpath.substr(1);
                 }
             } else {
-                meta.lpath = fName; // Fallback
+                meta.lpath = fName; 
+            }
+
+            // --- NEW: SYNC FIELDS ---
+            // completed: 0 or 1
+            meta.isRead = (sqlite3_column_int(stmt, 9) != 0);
+            
+            // favorite: 0 or 1
+            meta.isFavorite = (sqlite3_column_int(stmt, 10) != 0);
+            
+            // completed_ts: Unix timestamp
+            time_t readTs = (time_t)sqlite3_column_int64(stmt, 11);
+            if (meta.isRead && readTs > 0) {
+                meta.lastReadDate = formatIsoTime(readTs);
             }
             
-            // Статусы
-            meta.isRead = (sqlite3_column_int(stmt, 9) == 1);
-            meta.isFavorite = (sqlite3_column_int(stmt, 10) == 1);
-            
-            // UUID: В PocketBook нет нативного UUID поля для Calibre. 
-            // Обычно используется lpath или генерируется хэш. 
-            // Оставим пустым или равным lpath для сверки.
-            meta.uuid = ""; 
-            
-            // Время обновления
+            // Last Modified
             time_t updated = (time_t)sqlite3_column_int64(stmt, 6);
-            char timeBuf[32];
-            strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%dT%H:%M:%S+00:00", gmtime(&updated));
-            meta.lastModified = timeBuf;
+            meta.lastModified = formatIsoTime(updated);
+
+            // Simple UUID generation if missing (Calibre matches by LPATH usually if UUID is empty)
+            meta.uuid = ""; 
 
             books.push_back(meta);
         }

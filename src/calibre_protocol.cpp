@@ -1,3 +1,4 @@
+#include "calibre_protocol.h"
 #include <sys/stat.h>
 #include <errno.h>
 #include <vector>
@@ -9,6 +10,7 @@
 #include <cstring>
 #include <sstream>
 #include <iomanip>
+#include <ctime>
 
 // Helper for logging
 static void logProto(const char* fmt, ...) {
@@ -74,10 +76,15 @@ static std::string safeGetJsonString(json_object* val) {
     return str ? std::string(str) : "";
 }
 
-CalibreProtocol::CalibreProtocol(NetworkManager* net, BookManager* bookMgr) 
+CalibreProtocol::CalibreProtocol(NetworkManager* net, BookManager* bookMgr,
+                                 const std::string& readCol, 
+                                 const std::string& readDateCol, 
+                                 const std::string& favCol) 
     : network(net), bookManager(bookMgr), connected(false),
-      currentBookLength(0), currentBookReceived(0), currentBookFile(nullptr) {
-    deviceName = "PocketBook InkPad 4";
+      currentBookLength(0), currentBookReceived(0), currentBookFile(nullptr),
+      readColumn(readCol), readDateColumn(readDateCol), favoriteColumn(favCol) {
+    
+    deviceName = "PocketBook InkPad 4"; // Или другое имя
     appVersion = "1.0.0";
 }
 
@@ -549,65 +556,90 @@ std::string CalibreProtocol::parseJsonStringOrArray(json_object* val) {
     return "";
 }
 
+// Structure: user_metadata -> "col_name" -> "#value#" (bool)
+static bool getUserMetadataBool(json_object* userMeta, const std::string& colName) {
+    if (!userMeta || colName.empty()) return false;
+    
+    json_object* colObj = NULL;
+    if (json_object_object_get_ex(userMeta, colName.c_str(), &colObj)) {
+        json_object* valObj = NULL;
+        // Calibre stores the actual data inside "#value#"
+        if (json_object_object_get_ex(colObj, "#value#", &valObj)) {
+            return json_object_get_boolean(valObj);
+        }
+    }
+    return false;
+}
+
+// Helper to extract string (date) from Calibre's user_metadata structure
+static std::string getUserMetadataString(json_object* userMeta, const std::string& colName) {
+    if (!userMeta || colName.empty()) return "";
+    
+    json_object* colObj = NULL;
+    if (json_object_object_get_ex(userMeta, colName.c_str(), &colObj)) {
+        json_object* valObj = NULL;
+        if (json_object_object_get_ex(colObj, "#value#", &valObj)) {
+            const char* str = json_object_get_string(valObj);
+            return str ? std::string(str) : "";
+        }
+    }
+    return "";
+}
+
 BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
     BookMetadata metadata;
     json_object* val = NULL;
     
-    if (json_object_object_get_ex(obj, "uuid", &val))
-        metadata.uuid = safeGetJsonString(val);
-    
-    if (json_object_object_get_ex(obj, "title", &val))
-        metadata.title = safeGetJsonString(val);
-    
-    if (json_object_object_get_ex(obj, "authors", &val))
-        metadata.authors = parseJsonStringOrArray(val);
+    // Standard fields
+    if (json_object_object_get_ex(obj, "uuid", &val)) metadata.uuid = safeGetJsonString(val);
+    if (json_object_object_get_ex(obj, "title", &val)) metadata.title = safeGetJsonString(val);
+    if (json_object_object_get_ex(obj, "authors", &val)) metadata.authors = parseJsonStringOrArray(val);
+    if (json_object_object_get_ex(obj, "author_sort", &val)) metadata.authorSort = safeGetJsonString(val);
+    if (json_object_object_get_ex(obj, "lpath", &val)) metadata.lpath = safeGetJsonString(val);
+    if (json_object_object_get_ex(obj, "series", &val)) metadata.series = safeGetJsonString(val);
+    if (json_object_object_get_ex(obj, "series_index", &val)) metadata.seriesIndex = json_object_get_int(val);
+    if (json_object_object_get_ex(obj, "size", &val)) metadata.size = json_object_get_int64(val);
+    if (json_object_object_get_ex(obj, "last_modified", &val)) metadata.lastModified = safeGetJsonString(val);
 
-    if (json_object_object_get_ex(obj, "author_sort", &val))
-        metadata.authorSort = safeGetJsonString(val);
-        
-    if (json_object_object_get_ex(obj, "lpath", &val))
-        metadata.lpath = safeGetJsonString(val);
-        
-    if (json_object_object_get_ex(obj, "series", &val))
-        metadata.series = safeGetJsonString(val); // <-- Здесь был вылет
-        
-    if (json_object_object_get_ex(obj, "series_index", &val))
-        metadata.seriesIndex = json_object_get_int(val); // int обычно безопасен, вернет 0 для null
-        
-    if (json_object_object_get_ex(obj, "publisher", &val))
-        metadata.publisher = safeGetJsonString(val); // <-- И здесь был вылет
-        
-    if (json_object_object_get_ex(obj, "pubdate", &val))
-        metadata.pubdate = safeGetJsonString(val);
-        
-    if (json_object_object_get_ex(obj, "last_modified", &val))
-        metadata.lastModified = safeGetJsonString(val);
-        
-    if (json_object_object_get_ex(obj, "tags", &val))
-        metadata.tags = parseJsonStringOrArray(val);
-        
-    if (json_object_object_get_ex(obj, "comments", &val))
-        metadata.comments = safeGetJsonString(val);
-        
-    if (json_object_object_get_ex(obj, "size", &val))
-        metadata.size = json_object_get_int64(val);
-        
-    // Обработка обложки (без изменений, тут массив)
-    if (json_object_object_get_ex(obj, "thumbnail", &val)) {
-        if (json_object_get_type(val) == json_type_array && json_object_array_length(val) >= 3) {
-            json_object* w = json_object_array_get_idx(val, 0);
-            json_object* h = json_object_array_get_idx(val, 1);
-            json_object* data = json_object_array_get_idx(val, 2);
-            
-            if (w) metadata.thumbnailWidth = json_object_get_int(w);
-            if (h) metadata.thumbnailHeight = json_object_get_int(h);
-            if (data) metadata.thumbnail = safeGetJsonString(data);
-        }
+    // --- SYNC LOGIC START ---
+    
+    // 1. Check for standard _is_read_ flag (sometimes sent directly)
+    if (json_object_object_get_ex(obj, "_is_read_", &val)) {
+        metadata.isRead = json_object_get_boolean(val);
     }
     
+    // 2. Check user_metadata for Custom Columns (configured in main.cpp/config)
+    json_object* userMeta = NULL;
+    if (json_object_object_get_ex(obj, "user_metadata", &userMeta)) {
+        
+        // Handle Read Status Column (e.g., "#read")
+        if (!readColumn.empty()) {
+            bool readVal = getUserMetadataBool(userMeta, readColumn);
+            // Logic: if Calibre says it's read, mark it read. 
+            if (readVal) metadata.isRead = true;
+        }
+        
+        // Handle Favorite Column (e.g., "#favorite")
+        if (!favoriteColumn.empty()) {
+            metadata.isFavorite = getUserMetadataBool(userMeta, favoriteColumn);
+        }
+        
+        // Handle Read Date Column (e.g., "#read_date")
+        if (!readDateColumn.empty()) {
+            std::string dateStr = getUserMetadataString(userMeta, readDateColumn);
+            if (!dateStr.empty()) {
+                metadata.lastReadDate = dateStr;
+                // If there is a read date, the book is effectively read
+                metadata.isRead = true; 
+            }
+        }
+    }
+    // --- SYNC LOGIC END ---
+
     return metadata;
 }
 
+// This method constructs the JSON sent back to Calibre (Device -> Calibre)
 json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
     json_object* obj = json_object_new_object();
     
@@ -618,17 +650,26 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
     json_object_object_add(obj, "last_modified", json_object_new_string(metadata.lastModified.c_str()));
     json_object_object_add(obj, "size", json_object_new_int64(metadata.size));
     
+    // --- SYNC RESPONSE LOGIC ---
+    // Calibre driver.py looks for these specific keys to update its own database
+    
+    // Send Read Status
     if (metadata.isRead) {
         json_object_object_add(obj, "_is_read_", json_object_new_boolean(true));
     } else {
         json_object_object_add(obj, "_is_read_", json_object_new_boolean(false));
     }
     
+    // Send Read Date (if available)
     if (!metadata.lastReadDate.empty()) {
         json_object_object_add(obj, "_last_read_date_", json_object_new_string(metadata.lastReadDate.c_str()));
     }
-    // ----------------------------------
-
+    
+    // Note: Favorites are usually handled via Collections (SEND_BOOKLISTS), 
+    // but if you want to send it as metadata:
+    // Calibre doesn't automatically map a boolean to a tags/collection column easily here without plugin tweaks,
+    // but sending the status lets custom plugins handle it if needed.
+    
     return obj;
 }
 
@@ -733,24 +774,26 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
         return sendErrorResponse("Missing metadata");
     }
     
+    // Parse the incoming metadata (now including custom columns)
     BookMetadata metadata = jsonToMetadata(dataObj);
     
-    json_object* val = NULL;
-    if (json_object_object_get_ex(dataObj, "_is_read_", &val)) {
-        metadata.isRead = json_object_get_boolean(val);
-    }
+    logProto("Syncing metadata for: %s (Read: %d, Date: %s)", 
+             metadata.title.c_str(), metadata.isRead, metadata.lastReadDate.c_str());
     
-    logProto("Syncing metadata (settings only) for: %s", metadata.title.c_str());
-    
+    // Update database
+    // Note: We use updateBookSync which only touches books_settings
     if (bookManager->updateBookSync(metadata)) {
+        // Also update our session cache so subsequent requests during this connection match
         for(auto& b : sessionBooks) {
-            if (b.uuid == metadata.uuid) {
+            if (b.lpath == metadata.lpath) { // Match by lpath as UUID might be empty
                 b.isRead = metadata.isRead;
+                b.isFavorite = metadata.isFavorite;
+                b.lastReadDate = metadata.lastReadDate;
                 break;
             }
         }
     } else {
-        logProto("Warning: Attempted to sync metadata for non-existent book: %s", metadata.lpath.c_str());
+        logProto("Warning: Attempted to sync metadata for non-existent book");
     }
     
     return true;

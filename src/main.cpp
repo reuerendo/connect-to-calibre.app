@@ -333,7 +333,7 @@ void startConnection() {
     if (!bookManager) {
         logMsg("Creating BookManager");
         bookManager = new BookManager();
-        // Путь к базе данных книг
+        // Initialize the database path
         std::string dbPath = "/mnt/ext1/system/config/calibre_books.db";
         if (!bookManager->initialize(dbPath)) {
              logMsg("Failed to initialize database");
@@ -342,7 +342,17 @@ void startConnection() {
     
     if (!protocol) {
         logMsg("Creating CalibreProtocol");
-        protocol = new CalibreProtocol(networkManager, bookManager);
+        
+        // Читаем настройки столбцов
+        const char* readCol = ReadString(appConfig, KEY_READ_COLUMN, DEFAULT_READ_COLUMN);
+        const char* readDateCol = ReadString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
+        const char* favCol = ReadString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
+        
+        // Создаем протокол с передачей этих настроек
+        protocol = new CalibreProtocol(networkManager, bookManager, 
+                                      readCol ? readCol : "", 
+                                      readDateCol ? readDateCol : "", 
+                                      favCol ? favCol : "");
     }
     
     // Start connection in thread using pthread

@@ -12,15 +12,16 @@ struct json_object;
 
 class CalibreProtocol {
 public:
-    CalibreProtocol(NetworkManager* network, BookManager* bookManager);
+    CalibreProtocol(NetworkManager* network, BookManager* bookManager,
+                   const std::string& readCol, 
+                   const std::string& readDateCol, 
+                   const std::string& favCol);
     ~CalibreProtocol();
     
-    // Connection lifecycle
     bool performHandshake(const std::string& password);
     void handleMessages(std::function<void(const std::string&)> statusCallback);
     void disconnect();
     
-    // Status
     bool isConnected() const { return connected; }
     const std::string& getErrorMessage() const { return errorMessage; }
     
@@ -29,9 +30,12 @@ private:
     BookManager* bookManager;
     bool connected;
     std::string errorMessage;
-	std::vector<BookMetadata> sessionBooks;
+    std::vector<BookMetadata> sessionBooks;
     
-    // Device information
+    // Настройки столбцов Calibre
+    std::string readColumn;
+    std::string readDateColumn;
+    std::string favoriteColumn;
     std::string deviceUuid;
     std::string deviceName;
     std::string appVersion;

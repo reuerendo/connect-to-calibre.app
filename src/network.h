@@ -73,5 +73,4 @@ private:
     std::string receiveString();
 };
 
-
 #endif // NETWORK_H
