@@ -5,7 +5,7 @@
 #include "book_manager.h"
 #include <string>
 #include <functional>
-#include <cstdio>
+#include <cstdio> 
 
 // Forward declarations
 struct json_object;
@@ -68,7 +68,10 @@ private:
     std::string jsonToString(json_object* obj);
     json_object* parseJSON(const std::string& jsonStr);
     void freeJSON(json_object* obj);
-    std::string parseJsonStringOrArray(json_object* val); // <--- ADDED THIS
+
+    // --- ADDED THIS LINE BELOW ---
+    std::string parseJsonStringOrArray(json_object* val);
+    // -----------------------------
     
     // Metadata conversion
     BookMetadata jsonToMetadata(json_object* obj);
