@@ -23,53 +23,24 @@ std::string CalibreProtocol::getPasswordHash(const std::string& password,
         return "";
     }
     
-    // If password is empty, just hash the challenge
-    if (password.empty()) {
-        SHA_CTX ctx;
-        SHA1_Init(&ctx);
-        SHA1_Update(&ctx, challenge.c_str(), challenge.length());
-        
-        unsigned char hash[SHA_DIGEST_LENGTH];
-        SHA1_Final(hash, &ctx);
-        
-        std::stringstream ss;
-        for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
-            ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-        }
-        
-        std::string result = ss.str();
-        
-        FILE* logFile = fopen("/mnt/ext1/system/calibre-connect.log", "a");
-        if (logFile) {
-            fprintf(logFile, "[HASH] Empty password, Challenge: '%s', Hash: '%s'\n",
-                    challenge.c_str(), result.c_str());
-            fflush(logFile);
-            fclose(logFile);
-        }
-        
-        return result;
-    }
+    // Calibre does: SHA1(password + challenge) as UTF-8 strings
+    // NOT double hashing!
+    SHA_CTX ctx;
+    SHA1_Init(&ctx);
     
-    // First hash: SHA1(password)
-    SHA_CTX ctx1;
-    SHA1_Init(&ctx1);
-    SHA1_Update(&ctx1, password.c_str(), password.length());
+    // First add password bytes
+    SHA1_Update(&ctx, password.c_str(), password.length());
     
-    unsigned char passwordHash[SHA_DIGEST_LENGTH];
-    SHA1_Final(passwordHash, &ctx1);
+    // Then add challenge bytes
+    SHA1_Update(&ctx, challenge.c_str(), challenge.length());
     
-    // Second hash: SHA1(passwordHash + challenge)
-    SHA_CTX ctx2;
-    SHA1_Init(&ctx2);
-    SHA1_Update(&ctx2, passwordHash, SHA_DIGEST_LENGTH);
-    SHA1_Update(&ctx2, challenge.c_str(), challenge.length());
+    unsigned char hash[SHA_DIGEST_LENGTH];
+    SHA1_Final(hash, &ctx);
     
-    unsigned char finalHash[SHA_DIGEST_LENGTH];
-    SHA1_Final(finalHash, &ctx2);
-    
+    // Convert to hex string
     std::stringstream ss;
     for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
-        ss << std::hex << std::setw(2) << std::setfill('0') << (int)finalHash[i];
+        ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
     }
     
     std::string result = ss.str();
@@ -176,14 +147,14 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
         return false;
     }
     
-    // Wait for GET_DEVICE_INFORMATION
+    // Wait for next message - could be GET_DEVICE_INFORMATION or DISPLAY_MESSAGE (error)
     if (!network->receiveJSON(opcode, jsonData)) {
-        errorMessage = "Failed to receive device information request";
+        errorMessage = "Failed to receive response after initialization";
         return false;
     }
     
+    // Check for password error message
     if (opcode == DISPLAY_MESSAGE) {
-        // Check if it's a password error
         json_object* msg = parseJSON(jsonData);
         if (msg) {
             json_object* kindObj = NULL;
@@ -195,10 +166,12 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
             }
             freeJSON(msg);
         }
+        errorMessage = "Received unexpected message from Calibre";
+        return false;
     }
     
     if (opcode != GET_DEVICE_INFORMATION) {
-        errorMessage = "Unexpected opcode after initialization";
+        errorMessage = "Unexpected opcode after initialization: " + std::to_string((int)opcode);
         return false;
     }
     
@@ -207,15 +180,17 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
     json_object* deviceData = json_object_new_object();
     
     // Generate or load device UUID
-    const char* uuid = ReadString(GetGlobalConfig(), "device_uuid", "");
+    const char* uuid = ReadString(GetGlobalConfig(), "calibre_device_uuid", "");
     if (strlen(uuid) == 0) {
         // Generate new UUID
         char uuidBuf[64];
-        snprintf(uuidBuf, sizeof(uuidBuf), "%08x-%04x-%04x-%04x-%012x",
-                rand(), rand() & 0xFFFF, rand() & 0xFFFF, 
-                rand() & 0xFFFF, rand());
-        WriteString(GetGlobalConfig(), "device_uuid", uuidBuf);
-        uuid = uuidBuf;
+        srand(time(NULL));
+        snprintf(uuidBuf, sizeof(uuidBuf), "%08x-%04x-%04x-%04x-%012llx",
+                (unsigned int)rand(), rand() & 0xFFFF, rand() & 0xFFFF, 
+                rand() & 0xFFFF, (unsigned long long)rand() * rand());
+        WriteString(GetGlobalConfig(), "calibre_device_uuid", uuidBuf);
+        SaveConfig(GetGlobalConfig());
+        uuid = ReadString(GetGlobalConfig(), "calibre_device_uuid", "");
     }
     
     json_object_object_add(deviceData, "device_store_uuid", 
