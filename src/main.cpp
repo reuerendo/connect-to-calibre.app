@@ -169,10 +169,54 @@ void updateConnectionStatus(const char* status) {
     logMsg("Status update: %s", status);
     if (appConfig) {
         WriteString(appConfig, KEY_CONNECTION, status);
-        SaveConfig(appConfig);
-        // Trigger UI redraw
-        FullUpdate();
+        // Don't call FullUpdate here - config editor handles updates
     }
+}
+
+bool ensureWiFiEnabled() {
+    logMsg("Checking WiFi status");
+    
+    int netStatus = QueryNetwork();
+    logMsg("Network status: 0x%X", netStatus);
+    
+    // Check if WiFi is ready
+    if (netStatus & NET_WIFIREADY) {
+        logMsg("WiFi is ready");
+        
+        // Check if connected
+        if (netStatus & NET_CONNECTED) {
+            logMsg("WiFi is connected");
+            return true;
+        }
+        
+        logMsg("WiFi is ready but not connected");
+        return false;
+    }
+    
+    // WiFi is not enabled, try to enable it
+    logMsg("WiFi is not enabled, attempting to enable");
+    
+    int result = WiFiPower(NET_WIFI);
+    logMsg("WiFiPower result: %d", result);
+    
+    if (result != NET_OK) {
+        logMsg("Failed to enable WiFi: %d", result);
+        return false;
+    }
+    
+    // Wait for WiFi to become ready (up to 5 seconds)
+    for (int i = 0; i < 50; i++) {
+        usleep(100000); // 100ms
+        netStatus = QueryNetwork();
+        
+        if (netStatus & NET_WIFIREADY) {
+            logMsg("WiFi enabled successfully");
+            return false; // WiFi is ready but not connected yet
+        }
+    }
+    
+    logMsg("WiFi failed to become ready within timeout");
+    return false;
 }
 
 void* connectionThreadFunc(void* arg) {
@@ -234,24 +278,23 @@ void startConnection() {
         return;
     }
     
-    // Check network status before attempting connection
-    int netStatus = QueryNetwork();
-    DEBUG_LOG("Network status check: 0x%X", netStatus);
-    
-    if (!(netStatus & NET_CONNECTED)) {
-        DEBUG_LOG("Network not connected");
+    // Check and enable WiFi if needed
+    if (!ensureWiFiEnabled()) {
+        int netStatus = QueryNetwork();
         
-        // Try to get more info about network state
-        iv_netinfo* netInfo = NetInfo();
-        if (netInfo) {
-            DEBUG_LOG("Network info: connected=%d, name=%s", 
-                     netInfo->connected, netInfo->name);
+        if (!(netStatus & NET_WIFIREADY)) {
+            updateConnectionStatus("WiFi not available");
+            Message(ICON_WARNING, "Network Error", 
+                    "Failed to enable WiFi. Please check WiFi settings.", 3000);
+            return;
         }
         
-        updateConnectionStatus("Network not available");
-        Message(ICON_WARNING, "Network Error", 
-                "WiFi is not connected. Please connect to WiFi first.", 3000);
-        return;
+        if (!(netStatus & NET_CONNECTED)) {
+            updateConnectionStatus("WiFi not connected");
+            Message(ICON_WARNING, "Network Error", 
+                    "WiFi is not connected. Please connect to a WiFi network first.", 3000);
+            return;
+        }
     }
     
     isConnecting = true;
@@ -353,7 +396,7 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
             
         case EVT_SHOW:
-            FullUpdate();
+            // Don't call FullUpdate - config editor handles updates
             break;
             
         case EVT_KEYPRESS:
