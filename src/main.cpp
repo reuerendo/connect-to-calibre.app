@@ -212,7 +212,64 @@ void* connectionThreadFunc(void* arg) {
     std::string password;
     
     if (encryptedPassword && strlen(encryptedPassword) > 0) {
-        if (encryptedPassword[0] == '
+        if (encryptedPassword[0] == '$') {
+            const char* decrypted = ReadSecret(appConfig, KEY_PASSWORD, "");
+            if (decrypted) password = decrypted;
+        } else {
+            password = encryptedPassword;
+        }
+    } else {
+        password = "";
+    }
+    
+    logMsg("Connecting to %s:%d", ip, port);
+    
+    if (shouldStop) {
+        logMsg("Connection cancelled before connect");
+        isConnecting = false;
+        return NULL;
+    }
+    
+    if (!networkManager->connectToServer(ip, port)) {
+        logMsg("Connection failed");
+        updateConnectionStatus("Disconnected");
+        isConnecting = false;
+        return NULL;
+    }
+    
+    if (shouldStop) {
+        logMsg("Connection cancelled after connect");
+        networkManager->disconnect();
+        isConnecting = false;
+        return NULL;
+    }
+    
+    logMsg("Connected, starting handshake");
+    
+    if (!protocol->performHandshake(password)) {
+        logMsg("Handshake failed: %s", protocol->getErrorMessage().c_str());
+        updateConnectionStatus("Disconnected");
+        networkManager->disconnect();
+        isConnecting = false;
+        return NULL;
+    }
+    
+    logMsg("Handshake successful");
+    updateConnectionStatus("Connected");
+    
+    protocol->handleMessages([](const std::string& status) {
+        // Callback from protocol
+    });
+    
+    logMsg("Disconnecting");
+    protocol->disconnect();
+    networkManager->disconnect();
+    
+    updateConnectionStatus("Disconnected");
+    isConnecting = false;
+    
+    return NULL;
+}
 
 void startConnection() {
     if (isConnecting) return;
@@ -421,286 +478,6 @@ int mainEventHandler(int type, int par1, int par2) {
                 }
                 
                 closeLog();
-            }
-            return 1;
-    }
-    
-    return 0;
-}
-
-int main(int argc, char *argv[]) {
-    InkViewMain(mainEventHandler);
-    
-    // This code should never be reached
-    logMsg("After InkViewMain - this should not happen");
-    
-    return 0;
-}) {
-            const char* decrypted = ReadSecret(appConfig, KEY_PASSWORD, "");
-            if (decrypted) password = decrypted;
-        } else {
-            password = encryptedPassword;
-        }
-    } else {
-        password = "";
-    }
-    
-    logMsg("Connecting to %s:%d", ip, port);
-    
-    if (shouldStop) {
-        logMsg("Connection cancelled before connect");
-        isConnecting = false;
-        return NULL;
-    }
-    
-    if (!networkManager->connectToServer(ip, port)) {
-        logMsg("Connection failed");
-        updateConnectionStatus("Disconnected");
-        isConnecting = false;
-        return NULL;
-    }
-    
-    if (shouldStop) {
-        logMsg("Connection cancelled after connect");
-        networkManager->disconnect();
-        isConnecting = false;
-        return NULL;
-    }
-    
-    logMsg("Connected, starting handshake");
-    
-    if (!protocol->performHandshake(password)) {
-        logMsg("Handshake failed: %s", protocol->getErrorMessage().c_str());
-        updateConnectionStatus("Disconnected");
-        networkManager->disconnect();
-        isConnecting = false;
-        return NULL;
-    }
-    
-    logMsg("Handshake successful");
-    updateConnectionStatus("Connected");
-    
-    protocol->handleMessages([](const std::string& status) {
-        // Callback from protocol
-    });
-    
-    logMsg("Disconnecting");
-    protocol->disconnect();
-    networkManager->disconnect();
-    
-    updateConnectionStatus("Disconnected");
-    isConnecting = false;
-    
-    return NULL;
-}
-
-void startConnection() {
-    if (isConnecting) return;
-    
-    if (!ensureWiFiEnabled()) {
-        int netStatus = QueryNetwork();
-        if (!(netStatus & NET_CONNECTED)) {
-            Message(ICON_WARNING, "Network Error", 
-                    "WiFi is not connected. Please connect to a WiFi network first.", 3000);
-            return;
-        }
-    }
-    
-    isConnecting = true;
-    shouldStop = false;
-    
-    if (!networkManager) networkManager = new NetworkManager();
-    if (!bookManager) {
-        bookManager = new BookManager();
-        bookManager->initialize("");
-    }
-    
-    if (!protocol) {
-        const char* readCol = ReadString(appConfig, KEY_READ_COLUMN, DEFAULT_READ_COLUMN);
-        const char* readDateCol = ReadString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
-        const char* favCol = ReadString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
-        
-        protocol = new CalibreProtocol(networkManager, bookManager, 
-                                      readCol ? readCol : "", 
-                                      readDateCol ? readDateCol : "", 
-                                      favCol ? favCol : "");
-    }
-    
-    if (pthread_create(&connectionThread, NULL, connectionThreadFunc, NULL) != 0) {
-        logMsg("Failed to create connection thread");
-        updateConnectionStatus("Disconnected");
-        isConnecting = false;
-        return;
-    }
-}
-
-void stopConnection() {
-    logMsg("Stopping connection...");
-    shouldStop = true;
-    
-    if (protocol) protocol->disconnect();
-    if (networkManager) networkManager->disconnect();
-
-    if (isConnecting) {
-        logMsg("Waiting for thread join...");
-        pthread_join(connectionThread, NULL);
-        logMsg("Thread joined.");
-        isConnecting = false;
-    }
-    
-    snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "Disconnected");
-}
-
-void initConfig() {
-    iv_buildpath("/mnt/ext1/system/config");
-    appConfig = OpenConfig(CONFIG_FILE, configItems);
-    
-    if (!appConfig) {
-        appConfig = OpenConfig(CONFIG_FILE, NULL);
-        if (appConfig) {
-            WriteString(appConfig, KEY_IP, DEFAULT_IP);
-            WriteString(appConfig, KEY_PORT, DEFAULT_PORT);
-            WriteString(appConfig, KEY_PASSWORD, DEFAULT_PASSWORD);
-            WriteString(appConfig, KEY_READ_COLUMN, DEFAULT_READ_COLUMN);
-            WriteString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
-            WriteString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
-            WriteString(appConfig, KEY_CONNECTION, "Disconnected");
-            SaveConfig(appConfig);
-        }
-    }
-
-    if (appConfig) {
-        snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "Disconnected");
-        WriteString(appConfig, KEY_CONNECTION, "Disconnected");
-    }
-}
-
-void saveAndCloseConfig() {
-    if (appConfig) {
-        WriteString(appConfig, KEY_CONNECTION, "Disconnected");
-        SaveConfig(appConfig);
-        CloseConfig(appConfig);
-        appConfig = NULL;
-    }
-}
-
-void configSaveHandler() {
-    if (appConfig) SaveConfig(appConfig);
-}
-
-void configItemChangedHandler(char *name) {
-    if (appConfig) SaveConfig(appConfig);
-}
-
-void showMainScreen() {
-    ClearScreen();
-    OpenConfigEditor(
-        (char *)"Connect to Calibre",
-        appConfig,
-        configItems,
-        configSaveHandler,
-        configItemChangedHandler
-    );
-}
-
-void performExit() {
-    if (exitRequested) {
-        logMsg("Exit already in progress, ignoring");
-        return;
-    }
-    
-    exitRequested = true;
-    logMsg("Performing exit");
-    
-    // Stop connection thread
-    stopConnection();
-    
-    // Close config editor
-    logMsg("Closing config editor...");
-    CloseConfigLevel();
-    
-    // Save and close config
-    saveAndCloseConfig();
-    
-    // Cleanup resources
-    if (protocol) {
-        delete protocol;
-        protocol = NULL;
-    }
-    if (networkManager) {
-        delete networkManager;
-        networkManager = NULL;
-    }
-    if (bookManager) {
-        delete bookManager;
-        bookManager = NULL;
-    }
-    
-    // Close log before exiting
-    logMsg("Closing application normally");
-    closeLog();
-    
-    // Properly close the application
-    CloseApp();
-}
-
-int mainEventHandler(int type, int par1, int par2) {
-    if (type != EVT_POINTERMOVE && type != 49) {
-        logMsg("Event: %d, p1: %d, p2: %d", type, par1, par2);
-    }
-
-    switch (type) {
-        case EVT_INIT:
-            initLog();
-            logMsg("EVT_INIT");
-            SetPanelType(PANEL_ENABLED);
-            initConfig();
-            showMainScreen();
-            startConnection();
-            break;
-            
-        case EVT_USER_UPDATE:
-            SoftUpdate();
-            break;
-            
-        case EVT_SHOW:
-            SoftUpdate();
-            break;
-            
-        case EVT_KEYPRESS:
-            if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV) {
-                logMsg("KEY_BACK pressed - Exiting");
-                performExit();
-                return 0;
-            }
-            if (par1 == IV_KEY_HOME || par1 == IV_KEY_MENU) {
-                logMsg("KEY_HOME/MENU pressed - Exiting");
-                performExit();
-                return 0;
-            }
-            break;
-
-        case EVT_EXIT:
-            logMsg("EVT_EXIT received");
-            if (!exitRequested) {
-                performExit();
-            }
-            return 1;  // Return 1 to indicate we handled the exit
-            
-        case EVT_BACKGROUND:
-            logMsg("EVT_BACKGROUND detected. Exiting.");
-            if (!exitRequested) {
-                performExit();
-            }
-            return 1;
-
-        case EVT_PANEL:
-        case EVT_PANEL_ICON:
-        case EVT_PANEL_TASKLIST:
-        case EVT_PANEL_OBREEY_SYNC:
-            logMsg("Panel Event detected (%d). Exiting.", type);
-            if (!exitRequested) {
-                performExit();
             }
             return 1;
     }
