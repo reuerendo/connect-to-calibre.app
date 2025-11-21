@@ -37,6 +37,7 @@ private:
     bool handleGetDeviceInformation(json_object* args);
     bool handleSetCalibreInfo(json_object* args);
     bool handleFreeSpace(json_object* args);
+    bool handleTotalSpace(json_object* args);
     bool handleSetLibraryInfo(json_object* args);
     bool handleGetBookCount(json_object* args);
     bool handleSendBooklists(json_object* args);

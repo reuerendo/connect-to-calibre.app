@@ -24,7 +24,6 @@ std::string CalibreProtocol::getPasswordHash(const std::string& password,
     }
     
     // Calibre does: SHA1(password + challenge) as UTF-8 strings
-    // NOT double hashing!
     SHA_CTX ctx;
     SHA1_Init(&ctx);
     
@@ -219,19 +218,37 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
 }
 
 void CalibreProtocol::handleMessages(std::function<void(const std::string&)> statusCallback) {
+    FILE* logFile = fopen("/mnt/ext1/system/calibre-connect.log", "a");
+    
     while (connected && network->isConnected()) {
         CalibreOpcode opcode;
         std::string jsonData;
         
         if (!network->receiveJSON(opcode, jsonData)) {
+            if (logFile) {
+                fprintf(logFile, "[PROTOCOL] Failed to receive message\n");
+                fflush(logFile);
+            }
             errorMessage = "Connection lost";
             connected = false;
             break;
         }
         
+        if (logFile) {
+            fprintf(logFile, "[PROTOCOL] Received opcode %d\n", (int)opcode);
+            fflush(logFile);
+        }
+        
         json_object* args = parseJSON(jsonData);
         if (!args) {
+            if (logFile) {
+                fprintf(logFile, "[PROTOCOL] Failed to parse JSON\n");
+                fflush(logFile);
+            }
             errorMessage = "Failed to parse message";
+            
+            // Send error response and continue
+            sendErrorResponse("Failed to parse request");
             continue;
         }
         
@@ -239,69 +256,108 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
         
         switch (opcode) {
             case SET_CALIBRE_DEVICE_INFO:
+                if (logFile) fprintf(logFile, "[PROTOCOL] Handling SET_CALIBRE_DEVICE_INFO\n");
                 handled = handleSetCalibreInfo(args);
                 statusCallback("Received device info");
                 break;
                 
             case FREE_SPACE:
+                if (logFile) fprintf(logFile, "[PROTOCOL] Handling FREE_SPACE\n");
                 handled = handleFreeSpace(args);
                 statusCallback("Sent free space info");
                 break;
                 
+            case TOTAL_SPACE:
+                if (logFile) fprintf(logFile, "[PROTOCOL] Handling TOTAL_SPACE\n");
+                handled = handleTotalSpace(args);
+                statusCallback("Sent total space info");
+                break;
+                
             case SET_LIBRARY_INFO:
+                if (logFile) fprintf(logFile, "[PROTOCOL] Handling SET_LIBRARY_INFO\n");
                 handled = handleSetLibraryInfo(args);
                 statusCallback("Received library info");
                 break;
                 
             case GET_BOOK_COUNT:
+                if (logFile) fprintf(logFile, "[PROTOCOL] Handling GET_BOOK_COUNT\n");
                 handled = handleGetBookCount(args);
                 statusCallback("Sent book count");
                 break;
                 
             case SEND_BOOKLISTS:
+                if (logFile) fprintf(logFile, "[PROTOCOL] Handling SEND_BOOKLISTS\n");
                 handled = handleSendBooklists(args);
                 statusCallback("Processing booklists");
                 break;
                 
             case SEND_BOOK:
+                if (logFile) fprintf(logFile, "[PROTOCOL] Handling SEND_BOOK\n");
                 handled = handleSendBook(args);
                 statusCallback("Receiving book");
                 break;
                 
             case SEND_BOOK_METADATA:
+                if (logFile) fprintf(logFile, "[PROTOCOL] Handling SEND_BOOK_METADATA\n");
                 handled = handleSendBookMetadata(args);
                 statusCallback("Received book metadata");
                 break;
                 
             case DELETE_BOOK:
+                if (logFile) fprintf(logFile, "[PROTOCOL] Handling DELETE_BOOK\n");
                 handled = handleDeleteBook(args);
                 statusCallback("Deleted book");
                 break;
                 
             case GET_BOOK_FILE_SEGMENT:
+                if (logFile) fprintf(logFile, "[PROTOCOL] Handling GET_BOOK_FILE_SEGMENT\n");
                 handled = handleGetBookFileSegment(args);
                 statusCallback("Sent book file");
                 break;
                 
             case DISPLAY_MESSAGE:
+                if (logFile) fprintf(logFile, "[PROTOCOL] Handling DISPLAY_MESSAGE\n");
                 handled = handleDisplayMessage(args);
                 break;
                 
             case NOOP:
+                if (logFile) fprintf(logFile, "[PROTOCOL] Handling NOOP\n");
                 handled = handleNoop(args);
                 break;
                 
             default:
+                if (logFile) {
+                    fprintf(logFile, "[PROTOCOL] Unknown opcode: %d\n", (int)opcode);
+                    fflush(logFile);
+                }
                 errorMessage = "Unknown opcode: " + std::to_string((int)opcode);
-                handled = false;
+                // Send error response but don't disconnect
+                sendErrorResponse("Unknown opcode");
+                handled = true;  // Mark as handled to avoid error message
                 break;
         }
         
         freeJSON(args);
         
         if (!handled) {
+            if (logFile) {
+                fprintf(logFile, "[PROTOCOL] Handler failed: %s\n", errorMessage.c_str());
+                fflush(logFile);
+            }
             statusCallback("Error: " + errorMessage);
+            // Don't disconnect on handler errors, Calibre will retry
         }
+        
+        if (logFile) {
+            fprintf(logFile, "[PROTOCOL] Message processed\n");
+            fflush(logFile);
+        }
+    }
+    
+    if (logFile) {
+        fprintf(logFile, "[PROTOCOL] Message loop ended\n");
+        fflush(logFile);
+        fclose(logFile);
     }
 }
 
@@ -320,6 +376,23 @@ void CalibreProtocol::disconnect() {
 bool CalibreProtocol::handleSetCalibreInfo(json_object* args) {
     // Just acknowledge - we don't need to do anything with this
     return sendOKResponse(json_object_new_object());
+}
+
+bool CalibreProtocol::handleTotalSpace(json_object* args) {
+    struct statvfs stat;
+    if (statvfs("/mnt/ext1", &stat) != 0) {
+        return sendErrorResponse("Failed to get total space");
+    }
+    
+    unsigned long long totalSpace = (unsigned long long)stat.f_blocks * stat.f_frsize;
+    
+    json_object* response = json_object_new_object();
+    json_object_object_add(response, "total_space_on_device", 
+                          json_object_new_int64(totalSpace));
+    
+    bool result = sendOKResponse(response);
+    freeJSON(response);
+    return result;
 }
 
 bool CalibreProtocol::handleFreeSpace(json_object* args) {
