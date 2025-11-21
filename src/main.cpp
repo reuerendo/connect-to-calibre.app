@@ -87,8 +87,9 @@ static bool isConnecting = false;
 static bool shouldStop = false;
 static volatile bool exitRequested = false;
 
-// Forward declaration
+// Forward declarations
 int mainEventHandler(int type, int par1, int par2);
+void performExit();
 
 // Config editor structure
 static iconfigedit configItems[] = {
@@ -320,7 +321,6 @@ void stopConnection() {
 
     if (isConnecting) {
         logMsg("Connection thread is running, detaching for fast exit");
-        // Detach thread instead of joining to avoid blocking on network operations
         pthread_detach(connectionThread);
         isConnecting = false;
     }
@@ -373,7 +373,6 @@ void configItemChangedHandler(char *name) {
 
 void configCloseHandler() {
     logMsg("Config editor closed by user");
-    // User closed the config editor - exit the application
     performExit();
 }
 
@@ -383,7 +382,7 @@ void showMainScreen() {
         (char *)"Connect to Calibre",
         appConfig,
         configItems,
-        configCloseHandler,  // This is called when user closes the editor
+        configCloseHandler,
         configItemChangedHandler
     );
 }
@@ -397,17 +396,13 @@ void performExit() {
     exitRequested = true;
     logMsg("Performing exit");
     
-    // Stop connection thread
     stopConnection();
     
-    // Close config editor
     logMsg("Closing config editor...");
     CloseConfigLevel();
     
-    // Save and close config
     saveAndCloseConfig();
     
-    // Cleanup resources
     if (protocol) {
         delete protocol;
         protocol = NULL;
@@ -421,11 +416,9 @@ void performExit() {
         bookManager = NULL;
     }
     
-    // Close log before exiting
     logMsg("Closing application normally");
     closeLog();
     
-    // Properly close the application
     CloseApp();
 }
 
@@ -453,7 +446,6 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
             
         case EVT_KEYPRESS:
-            // Handle hardware keys
             if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV) {
                 logMsg("Hardware KEY_BACK pressed - Exiting");
                 performExit();
@@ -491,9 +483,6 @@ int mainEventHandler(int type, int par1, int par2) {
 
 int main(int argc, char *argv[]) {
     InkViewMain(mainEventHandler);
-    
-    // This code should never be reached
     logMsg("After InkViewMain - this should not happen");
-    
     return 0;
 }
