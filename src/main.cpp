@@ -65,6 +65,7 @@ static const char *KEY_READ_COLUMN = "read_column";
 static const char *KEY_READ_DATE_COLUMN = "read_date_column";
 static const char *KEY_FAVORITE_COLUMN = "favorite_column";
 static const char *KEY_CONNECTION = "connection_enabled";
+static char connectionStatusBuffer[128] = "Disconnected"; 
 
 // Default values
 static const char *DEFAULT_IP = "192.168.1.100";
@@ -90,7 +91,7 @@ static iconfigedit configItems[] = {
         (char*)"Connection",
         NULL,
         (char*)KEY_CONNECTION,
-        (char*)"Disconnected",
+        connectionStatusBuffer, // <--- ИЗМЕНЕНО: ссылка на буфер
         NULL,
         NULL,
         NULL
@@ -169,10 +170,14 @@ static iconfigedit configItems[] = {
 
 void updateConnectionStatus(const char* status) {
     logMsg("Status update: %s", status);
+    
+    snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "%s", status);
+    
     if (appConfig) {
         WriteString(appConfig, KEY_CONNECTION, status);
-        // Don't call FullUpdate here - config editor handles updates
     }
+    
+    SoftUpdate();
 }
 
 bool ensureWiFiEnabled() {
@@ -397,6 +402,11 @@ void initConfig() {
             WriteString(appConfig, KEY_CONNECTION, "Disconnected");
             SaveConfig(appConfig);
         }
+    }
+
+    if (appConfig) {
+        const char* savedStatus = ReadString(appConfig, KEY_CONNECTION, "Disconnected");
+        snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "%s", savedStatus);
     }
 }
 

@@ -295,23 +295,17 @@ bool BookManager::updateBookSync(const BookMetadata& metadata) {
 }
 
 bool BookManager::updateBook(const BookMetadata& metadata) {
-    // Для SQLite Insert/Update логика одинакова (проверка на существование есть внутри addBook)
     return addBook(metadata);
 }
 
-// Updated processBookSettings to handle logic like pb-db.lua
 bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadata& metadata, int profileId) {
-    // Prepare values
     int completed = metadata.isRead ? 1 : 0;
     int favorite = metadata.isFavorite ? 1 : 0;
     
-    // Logic from pb-db.lua: If marked read, set page to 100% (or npage)
     int cpage = metadata.isRead ? 100 : 0; 
     
-    // Handle Date: Parse ISO string from Calibre back to Unix Timestamp
     time_t completedTs = 0;
     if (!metadata.lastReadDate.empty()) {
-        // Basic parser for YYYY-MM-DDTHH:MM:SS...
         int y, m, d, H, M, S;
         if (sscanf(metadata.lastReadDate.c_str(), "%d-%d-%dT%d:%d:%d", &y, &m, &d, &H, &M, &S) >= 6) {
             struct tm tm = {0};
@@ -321,9 +315,9 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
             tm.tm_hour = H;
             tm.tm_min = M;
             tm.tm_sec = S;
-            completedTs = timegm(&tm); // use timegm for UTC
+            completedTs = timegm(&tm); // UTC
         } else {
-            completedTs = time(NULL); // Fallback
+            completedTs = time(NULL); 
         }
     } else if (metadata.isRead) {
         completedTs = time(NULL);
@@ -341,8 +335,6 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
     }
 
     if (exists) {
-        // We update specific fields. Note: In pb-db.lua it checks if values are different before update.
-        // Here we overwrite to ensure sync.
         const char* updateSql = 
             "UPDATE books_settings SET completed=?, favorite=?, completed_ts=?, cpage=? "
             "WHERE bookid=? AND profileid=?";
@@ -463,6 +455,15 @@ static std::string formatIsoTime(time_t timestamp) {
     return std::string(buffer);
 }
 
+// Helper to format Unix timestamp to ISO 8601 (for Calibre)
+static std::string formatIsoTime(time_t timestamp) {
+    if (timestamp == 0) return "";
+    char buffer[32];
+    struct tm* tm_info = gmtime(&timestamp);
+    strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S+00:00", tm_info);
+    return std::string(buffer);
+}
+
 std::vector<BookMetadata> BookManager::getAllBooks() {
     std::vector<BookMetadata> books;
     sqlite3* db = openDB();
@@ -470,12 +471,10 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
 
     int profileId = getCurrentProfileId(db);
     
-    // JOIN with books_settings to get read status and favorite status
-    // We assume completed_ts is the read date
+    // Исправленный SQL запрос: добавлено чтение completed, favorite, completed_ts
     std::string sql = 
         "SELECT b.id, b.title, b.author, b.series, b.numinseries, b.size, b.updated, "
-        "f.filename, fo.name, "
-        "bs.completed, bs.favorite, bs.completed_ts " 
+        "f.filename, fo.name, bs.completed, bs.favorite, bs.completed_ts "
         "FROM books_impl b "
         "JOIN files f ON b.id = f.book_id "
         "JOIN folders fo ON f.folder_id = fo.id "
@@ -489,7 +488,6 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
             BookMetadata meta;
             meta.dbBookId = sqlite3_column_int(stmt, 0);
             
-            // ... (Existing code for title, author, series, size) ...
             const char* title = (const char*)sqlite3_column_text(stmt, 1);
             const char* author = (const char*)sqlite3_column_text(stmt, 2);
             const char* series = (const char*)sqlite3_column_text(stmt, 3);
@@ -499,10 +497,11 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
             meta.series = series ? series : "";
             meta.seriesIndex = sqlite3_column_int(stmt, 4);
             meta.size = sqlite3_column_int64(stmt, 5);
-
-            // ... (Existing code for LPATH generation) ...
+            
+            // Формируем LPATH
             const char* filename = (const char*)sqlite3_column_text(stmt, 7);
             const char* folder = (const char*)sqlite3_column_text(stmt, 8);
+            
             std::string fullFolder = folder ? folder : "";
             std::string fName = filename ? filename : "";
             std::string fullPath = fullFolder + "/" + fName;
@@ -513,27 +512,20 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
                     meta.lpath = meta.lpath.substr(1);
                 }
             } else {
-                meta.lpath = fName; 
+                meta.lpath = fName;
             }
-
-            // --- NEW: SYNC FIELDS ---
-            // completed: 0 or 1
-            meta.isRead = (sqlite3_column_int(stmt, 9) != 0);
             
-            // favorite: 0 or 1
+            meta.isRead = (sqlite3_column_int(stmt, 9) != 0);
             meta.isFavorite = (sqlite3_column_int(stmt, 10) != 0);
             
-            // completed_ts: Unix timestamp
             time_t readTs = (time_t)sqlite3_column_int64(stmt, 11);
             if (meta.isRead && readTs > 0) {
                 meta.lastReadDate = formatIsoTime(readTs);
             }
-            
-            // Last Modified
+			
             time_t updated = (time_t)sqlite3_column_int64(stmt, 6);
             meta.lastModified = formatIsoTime(updated);
 
-            // Simple UUID generation if missing (Calibre matches by LPATH usually if UUID is empty)
             meta.uuid = ""; 
 
             books.push_back(meta);
@@ -546,7 +538,7 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
 }
 
 int BookManager::getBookCount() {
-    return getAllBooks().size(); // Неоптимально, но надежно для начала
+    return getAllBooks().size();
 }
 
 // ================= КОЛЛЕКЦИИ (BOOKSHELVES) =================

@@ -586,11 +586,39 @@ static std::string getUserMetadataString(json_object* userMeta, const std::strin
     return "";
 }
 
+static bool getUserMetadataBool(json_object* userMeta, const std::string& colName) {
+    if (!userMeta || colName.empty()) return false;
+    
+    json_object* colObj = NULL;
+    if (json_object_object_get_ex(userMeta, colName.c_str(), &colObj)) {
+        json_object* valObj = NULL;
+        // Calibre хранит значение внутри ключа "#value#"
+        if (json_object_object_get_ex(colObj, "#value#", &valObj)) {
+            return json_object_get_boolean(valObj);
+        }
+    }
+    return false;
+}
+
+static std::string getUserMetadataString(json_object* userMeta, const std::string& colName) {
+    if (!userMeta || colName.empty()) return "";
+    
+    json_object* colObj = NULL;
+    if (json_object_object_get_ex(userMeta, colName.c_str(), &colObj)) {
+        json_object* valObj = NULL;
+        if (json_object_object_get_ex(colObj, "#value#", &valObj)) {
+            const char* str = json_object_get_string(valObj);
+            return str ? std::string(str) : "";
+        }
+    }
+    return "";
+}
+
 BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
     BookMetadata metadata;
     json_object* val = NULL;
     
-    // Standard fields
+    // Стандартные поля
     if (json_object_object_get_ex(obj, "uuid", &val)) metadata.uuid = safeGetJsonString(val);
     if (json_object_object_get_ex(obj, "title", &val)) metadata.title = safeGetJsonString(val);
     if (json_object_object_get_ex(obj, "authors", &val)) metadata.authors = parseJsonStringOrArray(val);
@@ -601,41 +629,39 @@ BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
     if (json_object_object_get_ex(obj, "size", &val)) metadata.size = json_object_get_int64(val);
     if (json_object_object_get_ex(obj, "last_modified", &val)) metadata.lastModified = safeGetJsonString(val);
 
-    // --- SYNC LOGIC START ---
+    // --- ЛОГИКА СИНХРОНИЗАЦИИ ---
     
-    // 1. Check for standard _is_read_ flag (sometimes sent directly)
+    // 1. Проверяем стандартный флаг _is_read_ (иногда присылается напрямую)
     if (json_object_object_get_ex(obj, "_is_read_", &val)) {
         metadata.isRead = json_object_get_boolean(val);
     }
     
-    // 2. Check user_metadata for Custom Columns (configured in main.cpp/config)
+    // 2. Разбираем user_metadata для пользовательских колонок
     json_object* userMeta = NULL;
     if (json_object_object_get_ex(obj, "user_metadata", &userMeta)) {
         
-        // Handle Read Status Column (e.g., "#read")
+        // Обработка колонки статуса (#read)
         if (!readColumn.empty()) {
             bool readVal = getUserMetadataBool(userMeta, readColumn);
-            // Logic: if Calibre says it's read, mark it read. 
             if (readVal) metadata.isRead = true;
         }
         
-        // Handle Favorite Column (e.g., "#favorite")
+        // Обработка колонки избранного (#favorite)
         if (!favoriteColumn.empty()) {
             metadata.isFavorite = getUserMetadataBool(userMeta, favoriteColumn);
         }
         
-        // Handle Read Date Column (e.g., "#read_date")
+        // Обработка колонки даты прочтения (#read_date)
         if (!readDateColumn.empty()) {
             std::string dateStr = getUserMetadataString(userMeta, readDateColumn);
             if (!dateStr.empty()) {
                 metadata.lastReadDate = dateStr;
-                // If there is a read date, the book is effectively read
+                // Если дата прочтения есть, считаем книгу прочитанной
                 metadata.isRead = true; 
             }
         }
     }
-    // --- SYNC LOGIC END ---
-
+    
     return metadata;
 }
 
@@ -650,25 +676,19 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
     json_object_object_add(obj, "last_modified", json_object_new_string(metadata.lastModified.c_str()));
     json_object_object_add(obj, "size", json_object_new_int64(metadata.size));
     
-    // --- SYNC RESPONSE LOGIC ---
-    // Calibre driver.py looks for these specific keys to update its own database
+    // --- ОТПРАВКА СТАТУСОВ В CALIBRE ---
     
-    // Send Read Status
+    // Отправляем статус прочтения
     if (metadata.isRead) {
         json_object_object_add(obj, "_is_read_", json_object_new_boolean(true));
     } else {
         json_object_object_add(obj, "_is_read_", json_object_new_boolean(false));
     }
     
-    // Send Read Date (if available)
+    // Отправляем дату прочтения
     if (!metadata.lastReadDate.empty()) {
         json_object_object_add(obj, "_last_read_date_", json_object_new_string(metadata.lastReadDate.c_str()));
     }
-    
-    // Note: Favorites are usually handled via Collections (SEND_BOOKLISTS), 
-    // but if you want to send it as metadata:
-    // Calibre doesn't automatically map a boolean to a tags/collection column easily here without plugin tweaks,
-    // but sending the status lets custom plugins handle it if needed.
     
     return obj;
 }
@@ -774,18 +794,17 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
         return sendErrorResponse("Missing metadata");
     }
     
-    // Parse the incoming metadata (now including custom columns)
+    // Парсим входящие метаданные с учетом наших новых колонок
     BookMetadata metadata = jsonToMetadata(dataObj);
     
     logProto("Syncing metadata for: %s (Read: %d, Date: %s)", 
              metadata.title.c_str(), metadata.isRead, metadata.lastReadDate.c_str());
     
-    // Update database
-    // Note: We use updateBookSync which only touches books_settings
+    // Обновляем базу данных
     if (bookManager->updateBookSync(metadata)) {
-        // Also update our session cache so subsequent requests during this connection match
+        // Обновляем сессионный кэш, чтобы он соответствовал базе
         for(auto& b : sessionBooks) {
-            if (b.lpath == metadata.lpath) { // Match by lpath as UUID might be empty
+            if (b.lpath == metadata.lpath) { 
                 b.isRead = metadata.isRead;
                 b.isFavorite = metadata.isFavorite;
                 b.lastReadDate = metadata.lastReadDate;
