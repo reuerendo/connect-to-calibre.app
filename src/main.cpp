@@ -171,10 +171,8 @@ static iconfigedit configItems[] = {
 };
 
 void updateConnectionStatus(const char* status) {
-    // Только логируем все статусы
     logMsg("Status update: %s", status);
     
-    // На экран выводим только статус
     snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "%s", status);
     
     if (appConfig) {
@@ -253,7 +251,8 @@ void* connectionThreadFunc(void* arg) {
     updateConnectionStatus("Connected");
     
     protocol->handleMessages([](const std::string& status) {
-        logMsg("Protocol activity: %s", status.c_str());
+        // Keep logs but don't spam UI updates unless necessary
+        // logMsg("Protocol activity: %s", status.c_str());
     });
     
     logMsg("Disconnecting");
@@ -380,6 +379,9 @@ void showMainScreen() {
 }
 
 int mainEventHandler(int type, int par1, int par2) {
+    // Global event logging to catch hidden events (like panel taps)
+    logMsg("Event: %d, p1: %d, p2: %d", type, par1, par2);
+
     switch (type) {
         case EVT_INIT:
             initLog();
@@ -394,7 +396,6 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
             
         case EVT_KEYPRESS:
-            // Кнопка "Назад"
             if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV) {
                 logMsg("KEY_BACK pressed - Exiting");
                 stopConnection();
@@ -403,7 +404,6 @@ int mainEventHandler(int type, int par1, int par2) {
                 CloseApp();
                 return 1;
             }
-            // Кнопка "Домой" / "Меню"
             if (par1 == IV_KEY_HOME || par1 == IV_KEY_MENU) {
                 logMsg("KEY_HOME/MENU pressed - Exiting");
                 stopConnection();
@@ -414,9 +414,12 @@ int mainEventHandler(int type, int par1, int par2) {
             }
             break;
             
+        // Handle ALL panel events to ensure Home/Task icon works
         case EVT_PANEL:
-            // Нажатие на экранную панель задач
-            logMsg("EVT_PANEL pressed - Exiting");
+        case EVT_PANEL_ICON:
+        case EVT_PANEL_TASKLIST:
+        case EVT_PANEL_OBREEY_SYNC:
+            logMsg("Panel Event detected (%d). Exiting.", type);
             stopConnection();
             saveAndCloseConfig();
             closeLog();
