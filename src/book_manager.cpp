@@ -64,6 +64,26 @@ std::string BookManager::getFirstLetter(const std::string& str) {
     return res;
 }
 
+int BookManager::getCurrentProfileId(sqlite3* db) {
+    char* profileName = GetCurrentProfile(); // InkView API
+    if (!profileName) return 1; // Default profile ID is usually 1
+
+    sqlite3_stmt* stmt;
+    const char* sql = "SELECT id FROM profiles WHERE name = ?";
+    int id = 1;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, profileName, -1, SQLITE_STATIC);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            id = sqlite3_column_int(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+    
+    if (profileName) free(profileName);
+    return id;
+}
+
 int BookManager::getOrCreateFolder(sqlite3* db, const std::string& folderPath, int storageId) {
     int folderId = -1;
     const char* insertSql = "INSERT INTO folders (storageid, name) VALUES (?, ?) "
