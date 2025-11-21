@@ -7,6 +7,20 @@
 #include <sstream>
 #include <iomanip>
 
+// Helper for logging
+static void logProto(const char* fmt, ...) {
+    FILE* f = fopen("/mnt/ext1/system/calibre-connect.log", "a");
+    if (f) {
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(f, fmt, args);
+        va_end(args);
+        fprintf(f, "\n");
+        fflush(f); // Ensure write
+        fclose(f);
+    }
+}
+
 CalibreProtocol::CalibreProtocol(NetworkManager* net, BookManager* bookMgr) 
     : network(net), bookManager(bookMgr), connected(false),
       currentBookLength(0), currentBookReceived(0), currentBookFile(nullptr) {
@@ -190,8 +204,6 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
 }
 
 void CalibreProtocol::handleMessages(std::function<void(const std::string&)> statusCallback) {
-    FILE* logFile = fopen("/mnt/ext1/system/calibre-connect.log", "a");
-    
     while (connected && network->isConnected()) {
         CalibreOpcode opcode;
         std::string jsonData;
@@ -204,10 +216,7 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
             break;
         }
         
-        if (logFile) {
-            fprintf(logFile, "[PROTOCOL] Received opcode %d\n", (int)opcode);
-            fflush(logFile);
-        }
+        logProto("[PROTOCOL] Received opcode %d", (int)opcode);
         
         json_object* args = parseJSON(jsonData);
         if (!args) {
@@ -215,7 +224,6 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
             continue;
         }
         
-        // Removed unused 'bool handled'
         bool shouldDisconnect = false;
         
         switch (opcode) {
@@ -292,17 +300,9 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
         
         if (shouldDisconnect) {
             connected = false;
-            if (logFile) {
-                fprintf(logFile, "[PROTOCOL] Clean disconnect\n");
-                fflush(logFile);
-                fclose(logFile);
-            }
+            logProto("[PROTOCOL] Clean disconnect");
             return;
         }
-    }
-    
-    if (logFile) {
-        fclose(logFile);
     }
 }
 
@@ -380,7 +380,6 @@ bool CalibreProtocol::handleGetBookCount(json_object* args) {
     bool result = sendOKResponse(response);
     freeJSON(response);
     
-    // If we have books, stream their metadata
     if (count > 0) {
         std::vector<BookMetadata> books = bookManager->getAllBooks();
         for (const auto& book : books) {
@@ -395,7 +394,6 @@ bool CalibreProtocol::handleGetBookCount(json_object* args) {
 }
 
 bool CalibreProtocol::handleSendBooklists(json_object* args) {
-    // Get collections data
     json_object* collectionsObj = NULL;
     if (json_object_object_get_ex(args, "collections", &collectionsObj)) {
         std::map<std::string, std::vector<std::string>> collections;
@@ -410,9 +408,6 @@ bool CalibreProtocol::handleSendBooklists(json_object* args) {
         }
         bookManager->updateCollections(collections);
     }
-    
-    // Wait for metadata updates
-    // Removed unused 'count' variable
     return true;
 }
 
@@ -445,6 +440,19 @@ BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
         metadata.comments = json_object_get_string(val);
     if (json_object_object_get_ex(obj, "size", &val))
         metadata.size = json_object_get_int64(val);
+        
+    // UPDATED: Handle thumbnail array [width, height, base64_data]
+    if (json_object_object_get_ex(obj, "thumbnail", &val)) {
+        if (json_object_get_type(val) == json_type_array && json_object_array_length(val) >= 3) {
+            json_object* w = json_object_array_get_idx(val, 0);
+            json_object* h = json_object_array_get_idx(val, 1);
+            json_object* data = json_object_array_get_idx(val, 2);
+            
+            if (w) metadata.thumbnailWidth = json_object_get_int(w);
+            if (h) metadata.thumbnailHeight = json_object_get_int(h);
+            if (data) metadata.thumbnail = json_object_get_string(data);
+        }
+    }
     
     return metadata;
 }
@@ -459,10 +467,15 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
     json_object_object_add(obj, "last_modified", json_object_new_string(metadata.lastModified.c_str()));
     json_object_object_add(obj, "size", json_object_new_int64(metadata.size));
     
+    // Note: We generally don't send the full thumbnail back to Calibre to save bandwidth
+    // unless explicitly requested, but for now we keep it simple.
+    
     return obj;
 }
 
 bool CalibreProtocol::handleSendBook(json_object* args) {
+    logProto("Starting handleSendBook");
+    
     // Parse book metadata
     json_object* metadataObj = NULL;
     json_object* lpathObj = NULL;
@@ -478,22 +491,17 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     currentBookLength = json_object_get_int64(lengthObj);
     currentBookReceived = 0;
     
+    logProto("Receiving book: %s (%lld bytes)", currentBookLpath.c_str(), currentBookLength);
+    
     BookMetadata metadata = jsonToMetadata(metadataObj);
     metadata.lpath = currentBookLpath;
     metadata.size = currentBookLength;
     
-    // Send OK response to start receiving
-    json_object* response = json_object_new_object();
-    json_object_object_add(response, "lpath", json_object_new_string(currentBookLpath.c_str()));
+    // 1. Prepare File System FIRST (Critical Fix)
+    // We must ensure we can write the file BEFORE telling Calibre "OK, send it"
     
-    if (!sendOKResponse(response)) {
-        freeJSON(response);
-        return false;
-    }
-    freeJSON(response);
-    
-    // Open file for writing
     std::string filePath = bookManager->getBookFilePath(currentBookLpath);
+    logProto("Target path: %s", filePath.c_str());
     
     // Create directories
     size_t pos = filePath.rfind('/');
@@ -504,17 +512,34 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     
     currentBookFile = iv_fopen(filePath.c_str(), "wb");
     if (!currentBookFile) {
+        logProto("Failed to open file for writing!");
         return sendErrorResponse("Failed to create book file");
     }
     
-    // Receive binary data
+    // 2. Send OK response to start receiving
+    json_object* response = json_object_new_object();
+    json_object_object_add(response, "lpath", json_object_new_string(currentBookLpath.c_str()));
+    
+    if (!sendOKResponse(response)) {
+        logProto("Failed to send OK response");
+        freeJSON(response);
+        iv_fclose(currentBookFile);
+        currentBookFile = nullptr;
+        return false;
+    }
+    freeJSON(response);
+    
+    // 3. Receive binary data
     const size_t CHUNK_SIZE = 4096;
     std::vector<char> buffer(CHUNK_SIZE);
+    
+    logProto("Starting binary transfer...");
     
     while (currentBookReceived < currentBookLength) {
         size_t toRead = std::min((size_t)(currentBookLength - currentBookReceived), CHUNK_SIZE);
         
         if (!network->receiveBinaryData(buffer.data(), toRead)) {
+            logProto("Network error during file transfer");
             iv_fclose(currentBookFile);
             currentBookFile = nullptr;
             return false;
@@ -522,6 +547,7 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
         
         size_t written = fwrite(buffer.data(), 1, toRead, currentBookFile);
         if (written != toRead) {
+            logProto("Disk write error");
             iv_fclose(currentBookFile);
             currentBookFile = nullptr;
             return sendErrorResponse("Failed to write book data");
@@ -530,11 +556,13 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
         currentBookReceived += toRead;
     }
     
+    logProto("Transfer complete.");
     iv_fclose(currentBookFile);
     currentBookFile = nullptr;
     
     // Add book to database
     bookManager->addBook(metadata);
+    logProto("Book added to DB.");
     
     return true;
 }
