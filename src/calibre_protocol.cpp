@@ -375,7 +375,10 @@ void CalibreProtocol::disconnect() {
 
 bool CalibreProtocol::handleSetCalibreInfo(json_object* args) {
     // Just acknowledge - we don't need to do anything with this
-    return sendOKResponse(json_object_new_object());
+    json_object* response = json_object_new_object();
+    bool result = sendOKResponse(response);
+    freeJSON(response);
+    return result;
 }
 
 bool CalibreProtocol::handleTotalSpace(json_object* args) {
@@ -414,7 +417,10 @@ bool CalibreProtocol::handleFreeSpace(json_object* args) {
 
 bool CalibreProtocol::handleSetLibraryInfo(json_object* args) {
     // Just acknowledge
-    return sendOKResponse(json_object_new_object());
+    json_object* response = json_object_new_object();
+    bool result = sendOKResponse(response);
+    freeJSON(response);
+    return result;
 }
 
 bool CalibreProtocol::handleGetBookCount(json_object* args) {
@@ -436,7 +442,10 @@ bool CalibreProtocol::handleSendBooklists(json_object* args) {
 
 bool CalibreProtocol::handleSendBook(json_object* args) {
     // TODO: Implement book receiving
-    return sendOKResponse(json_object_new_object());
+    json_object* response = json_object_new_object();
+    bool result = sendOKResponse(response);
+    freeJSON(response);
+    return result;
 }
 
 bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
@@ -456,7 +465,10 @@ bool CalibreProtocol::handleDeleteBook(json_object* args) {
 
 bool CalibreProtocol::handleGetBookFileSegment(json_object* args) {
     // TODO: Implement sending books to calibre
-    return sendOKResponse(json_object_new_object());
+    json_object* response = json_object_new_object();
+    bool result = sendOKResponse(response);
+    freeJSON(response);
+    return result;
 }
 
 bool CalibreProtocol::handleDisplayMessage(json_object* args) {
@@ -480,10 +492,12 @@ bool CalibreProtocol::handleNoop(json_object* args) {
     
     if (ejectingObj && json_object_get_boolean(ejectingObj)) {
         connected = false;
-        return sendOKResponse(json_object_new_object());
     }
     
-    return sendOKResponse(json_object_new_object());
+    json_object* response = json_object_new_object();
+    bool result = sendOKResponse(response);
+    freeJSON(response);
+    return result;
 }
 
 bool CalibreProtocol::sendOKResponse(json_object* data) {
