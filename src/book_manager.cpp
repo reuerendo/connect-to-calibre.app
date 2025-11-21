@@ -629,7 +629,11 @@ void BookManager::updateCollections(const std::map<std::string, std::vector<std:
     
     sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
     
-    for (auto const& [colName, lpaths] : collections) {
+    // C++11 loop (fix for structured bindings)
+    for (auto const& entry : collections) {
+        const std::string& colName = entry.first;
+        const std::vector<std::string>& lpaths = entry.second;
+        
         LOG_MSG("Processing collection: %s with %d books", colName.c_str(), (int)lpaths.size());
         
         int shelfId = getOrCreateBookshelf(db, colName);
