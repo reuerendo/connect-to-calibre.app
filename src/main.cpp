@@ -400,12 +400,12 @@ void performExit() {
         bookManager = NULL;
     }
     
-    // Close log
+    // Close log before exiting
+    logMsg("Closing application normally");
     closeLog();
     
-    // Force exit the process
-    logMsg("Calling _exit(0)");
-    _exit(0);
+    // Properly close the application
+    CloseApp();
 }
 
 int mainEventHandler(int type, int par1, int par2) {
@@ -446,21 +446,27 @@ int mainEventHandler(int type, int par1, int par2) {
 
         case EVT_EXIT:
             logMsg("EVT_EXIT received");
-            performExit();
-            return 0;
+            if (!exitRequested) {
+                performExit();
+            }
+            return 1;  // Return 1 to indicate we handled the exit
             
         case EVT_BACKGROUND:
             logMsg("EVT_BACKGROUND detected. Exiting.");
-            performExit();
-            return 0;
+            if (!exitRequested) {
+                performExit();
+            }
+            return 1;
 
         case EVT_PANEL:
         case EVT_PANEL_ICON:
         case EVT_PANEL_TASKLIST:
         case EVT_PANEL_OBREEY_SYNC:
             logMsg("Panel Event detected (%d). Exiting.", type);
-            performExit();
-            return 0;
+            if (!exitRequested) {
+                performExit();
+            }
+            return 1;
     }
     
     return 0;
@@ -469,7 +475,7 @@ int mainEventHandler(int type, int par1, int par2) {
 int main(int argc, char *argv[]) {
     InkViewMain(mainEventHandler);
     
-    // This code should never be reached due to _exit(0)
+    // This code should never be reached
     logMsg("After InkViewMain - this should not happen");
     
     return 0;
