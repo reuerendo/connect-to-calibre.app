@@ -355,7 +355,7 @@ bool NetworkManager::sendAll(const void* data, size_t length) {
         totalSent += sent;
     }
     
-    logNetMsg("Sent %zu bytes successfully", totalSent);
+    // logNetMsg("Sent %zu bytes successfully", totalSent);
     return true;
 }
 
@@ -381,7 +381,7 @@ bool NetworkManager::receiveAll(void* buffer, size_t length) {
         totalReceived += received;
     }
     
-    logNetMsg("Received %zu bytes successfully", totalReceived);
+    // logNetMsg("Received %zu bytes successfully", totalReceived);
     return true;
 }
 
