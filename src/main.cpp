@@ -1,7 +1,3 @@
-{
-type: uploaded file
-fileName: main.cpp
-fullContent:
 #include "inkview.h"
 #include "network.h"
 #include "calibre_protocol.h"
@@ -124,7 +120,7 @@ static iconfigedit configItems[] = {
     {
         CFG_NUMBER,
         NULL,
-        (char *)"   Port",
+        (char *)"    Port",
         NULL,
         (char *)KEY_PORT,
         (char *)DEFAULT_PORT,
@@ -620,5 +616,4 @@ int mainEventHandler(int type, int par1, int par2) {
 int main(int argc, char *argv[]) {
     InkViewMain(mainEventHandler);
     return 0;
-}
 }
