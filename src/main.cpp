@@ -213,8 +213,6 @@ void notifySyncComplete(int booksReceived) {
 void* connectionThreadFunc(void* arg) {
     logMsg("Connection thread started");
     
-    // NOTE: We assume WiFi is already connected here (handled in startConnection)
-    
     updateConnectionStatus("Connecting...");
     
     const char* ip = ReadString(appConfig, KEY_IP, DEFAULT_IP);
@@ -299,8 +297,6 @@ void* connectionThreadFunc(void* arg) {
     return NULL;
 }
 
-// Starts the TCP socket thread for Calibre. 
-// Should only be called after WiFi is confirmed connected.
 void startCalibreConnection() {
     if (isConnecting) {
         logMsg("Connection already in progress");
@@ -341,7 +337,6 @@ void startCalibreConnection() {
 }
 
 // Primary entry point for connection logic.
-// Uses native SDK NetConnect(NULL) to ensure WiFi connectivity first.
 void startConnection() {
     if (isConnecting) {
         logMsg("Connection logic already running");
@@ -354,7 +349,6 @@ void startConnection() {
     // 1. Check if we are already connected
     iv_netinfo* netInfo = NetInfo();
     if (netInfo && netInfo->connected) {
-        // FIXED: Removed access to netInfo->ip_addr.addr as it does not exist in iv_netinfo
         logMsg("WiFi already connected to: %s", netInfo->name);
         startCalibreConnection();
         return;
@@ -362,10 +356,11 @@ void startConnection() {
 
     // 2. Not connected? Use standard SDK dialog to connect.
     updateConnectionStatus("Connecting to WiFi...");
+    
+    // NetConnect(NULL) calls the native system dialog.
     int netResult = NetConnect(NULL);
 
     if (netResult == NET_OK) {
-        // Refresh info to log success
         netInfo = NetInfo();
         logMsg("WiFi connected successfully to: %s", netInfo ? netInfo->name : "Unknown");
         startCalibreConnection();
@@ -376,6 +371,14 @@ void startConnection() {
         const char* errorMsg = "Could not connect to WiFi network.";
         notifyConnectionFailed(errorMsg);
     }
+}
+
+// Timer callback to delay connection start until UI is drawn
+void connectionTimerFunc() {
+    logMsg("Timer fired: starting connection sequence");
+    // Ensure timer is cleared (though WeakTimer usually fires once/handled by system)
+    ClearTimer((iv_timerproc)connectionTimerFunc);
+    startConnection();
 }
 
 void stopConnection() {
@@ -442,7 +445,6 @@ void retryConnectionHandler(int button) {
     
     if (button == 1) {
         logMsg("User chose to retry connection");
-        // Use SoftUpdate to clear the dialog before blocking on NetConnect
         SoftUpdate(); 
         startConnection();
     } else {
@@ -474,6 +476,9 @@ void performExit() {
     
     exitRequested = true;
     logMsg("Performing exit");
+    
+    // Clear the start timer if we exit immediately
+    ClearTimer((iv_timerproc)connectionTimerFunc);
     
     stopConnection();
     
@@ -517,18 +522,18 @@ int mainEventHandler(int type, int par1, int par2) {
             SetPanelType(PANEL_ENABLED);
             initConfig();
             showMainScreen();
-            // Start connection process immediately after UI init
-            startConnection();
+            
+            // Force an initial update to ensure the config screen is drawn
+            SoftUpdate();
+            
+            // Schedule the connection start after 300ms to allow UI to render
+            SetWeakTimer("ConnectTimer", connectionTimerFunc, 300);
             break;
             
         case EVT_USER_UPDATE:
-            // Only update UI, logic is handled in threads or initial connection
             PartialUpdate(0, 0, ScreenWidth(), ScreenHeight());
             break;
         
-        // EVT_NET_CONNECTED usually fires when NetConnect succeeds, 
-        // but since we use blocking NetConnect(NULL), we handle success there.
-        // However, if the user connects externally (e.g. via status bar), we catch it here.
         case EVT_NET_CONNECTED:
             logMsg("EVT_NET_CONNECTED received");
             if (!isConnecting && !networkManager->isConnected()) {
@@ -576,7 +581,7 @@ int mainEventHandler(int type, int par1, int par2) {
                 exitRequested = true;
                 stopConnection();
                 saveAndCloseConfig();
-                // Cleanup objects
+                
                 if (protocol) { delete protocol; protocol = NULL; }
                 if (cacheManager) { delete cacheManager; cacheManager = NULL; }
                 if (networkManager) { delete networkManager; networkManager = NULL; }
