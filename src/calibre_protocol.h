@@ -24,6 +24,7 @@ public:
     
     bool isConnected() const { return connected; }
     const std::string& getErrorMessage() const { return errorMessage; }
+    int getBooksReceivedCount() const { return booksReceivedInSession; }
     
 private:
     NetworkManager* network;
@@ -45,6 +46,7 @@ private:
     long long currentBookLength;
     long long currentBookReceived;
     FILE* currentBookFile;
+    int booksReceivedInSession;
     
     // Protocol handlers
     bool handleGetInitializationInfo(json_object* args);
@@ -74,10 +76,7 @@ private:
     std::string jsonToString(json_object* obj);
     json_object* parseJSON(const std::string& jsonStr);
     void freeJSON(json_object* obj);
-
-    // --- ADDED THIS LINE BELOW ---
     std::string parseJsonStringOrArray(json_object* val);
-    // -----------------------------
     
     // Metadata conversion
     BookMetadata jsonToMetadata(json_object* obj);
