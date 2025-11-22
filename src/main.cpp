@@ -99,6 +99,7 @@ static volatile bool exitRequested = false;
 int mainEventHandler(int type, int par1, int par2);
 void performExit();
 void startConnection();
+void finalSyncMessageTimer();
 
 // Config editor structure
 static iconfigedit configItems[] = {
