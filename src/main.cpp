@@ -1,4 +1,5 @@
-#include "inkview.h"
+void performExit();
+void delayedConnectionStart();#include "inkview.h"
 #include "network.h"
 #include "calibre_protocol.h"
 #include "book_manager.h"
@@ -88,9 +89,6 @@ static bool shouldStop = false;
 static volatile bool exitRequested = false;
 
 int mainEventHandler(int type, int par1, int par2);
-void performExit();
-void startConnection();
-void delayedConnectionStart();
 
 static iconfigedit configItems[] = {
     {
@@ -334,52 +332,96 @@ void startCalibreConnection() {
 }
 
 void delayedConnectionStart() {
-    startConnection();
-}
-
-void startConnection() {
-    if (isConnecting) {
-        logMsg("Connection already in progress");
-        return;
-    }
+    logMsg("Delayed connection start");
     
-    logMsg("Starting connection sequence");
+    // Check current WiFi state
+    NET_STATE currentState = GetNetState();
+    logMsg("Current NET_STATE: %d (DISCONNECTED=%d, CONNECTING=%d, CONNECTED=%d)", 
+           currentState, DISCONNECTED, CONNECTING, CONNECTED);
     
-    int netStatus = QueryNetwork();
-    logMsg("QueryNetwork() = 0x%X (NET_WIFI=0x%X, WIFIREADY=0x%X, CONNECTED=0x%X)", 
-           netStatus, NET_WIFI, NET_WIFIREADY, NET_CONNECTED);
-    
-    if (netStatus & NET_CONNECTED) {
-        iv_netinfo* netInfo = NetInfo();
-        if (netInfo && netInfo->connected) {
-            logMsg("WiFi already connected to: %s", netInfo->name);
-            startCalibreConnection();
-            return;
-        }
-    }
-    
-    if (!(netStatus & NET_WIFI)) {
-        logMsg("WiFi module not available");
-        updateConnectionStatus("WiFi not available");
-        notifyConnectionFailed("WiFi module not available on this device.");
-        return;
-    }
-    
-    logMsg("WiFi module available, attempting connection");
-    updateConnectionStatus("Connecting to WiFi...");
-    
-    int result = NetConnect2(NULL, 1);
-    logMsg("NetConnect2 result: %d (NET_OK=%d)", result, NET_OK);
-    
-    if (result == NET_OK) {
-        logMsg("WiFi connected successfully");
+    if (currentState == CONNECTED) {
+        logMsg("WiFi already connected");
+        updateConnectionStatus("WiFi connected");
+        SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
         startCalibreConnection();
+        return;
+    }
+    
+    // Enable WiFi if disabled
+    logMsg("Enabling WiFi module");
+    updateConnectionStatus("Enabling WiFi...");
+    SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+    
+    if (WiFiPower(1) != 0) {
+        logMsg("Failed to enable WiFi");
+        updateConnectionStatus("WiFi failed");
+        notifyConnectionFailed("Cannot enable WiFi.\nPlease check device settings.");
+        return;
+    }
+    
+    // Wait for WiFi module initialization
+    logMsg("Waiting for WiFi module initialization");
+    int attempts = 0;
+    while (attempts < 10) {
+        usleep(500000); // 0.5 seconds
+        NET_STATE state = GetNetState();
+        logMsg("Init wait attempt %d, state: %d", attempts, state);
+        if (state != DISCONNECTED) break;
+        attempts++;
+    }
+    
+    if (attempts >= 10) {
+        logMsg("WiFi module initialization timeout");
+        updateConnectionStatus("WiFi timeout");
+        notifyConnectionFailed("WiFi module initialization timeout.\nPlease try again.");
+        return;
+    }
+    
+    // Try to connect to WiFi
+    logMsg("Attempting WiFi connection");
+    updateConnectionStatus("Connecting to WiFi...");
+    SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+    
+    int connectResult = NetConnect(NULL);
+    logMsg("NetConnect result: %d (NET_OK=%d)", connectResult, NET_OK);
+    
+    if (connectResult == NET_OK || connectResult == NET_CONNECT) {
+        // Wait for connection to establish
+        logMsg("Waiting for WiFi connection");
+        attempts = 0;
+        while (attempts < 20) { // maximum 10 seconds
+            usleep(500000); // 0.5 seconds
+            NET_STATE state = GetNetState();
+            
+            if (attempts % 4 == 0) { // Update status every 2 seconds
+                char statusBuf[64];
+                snprintf(statusBuf, sizeof(statusBuf), "Connecting to WiFi... %ds", attempts / 2);
+                updateConnectionStatus(statusBuf);
+                SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+            }
+            
+            logMsg("Connection wait attempt %d, state: %d", attempts, state);
+            
+            if (state == CONNECTED) {
+                logMsg("WiFi connected successfully!");
+                updateConnectionStatus("WiFi connected");
+                SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+                startCalibreConnection();
+                return;
+            }
+            
+            attempts++;
+        }
+        
+        logMsg("WiFi connection timeout");
+        updateConnectionStatus("Connection timeout");
+        notifyConnectionFailed("Failed to connect to WiFi.\nConnection timeout.");
     } else {
-        logMsg("WiFi connection failed: %d", result);
+        logMsg("NetConnect failed with code: %d", connectResult);
         updateConnectionStatus("WiFi failed");
         
         const char* errorMsg = NULL;
-        switch (result) {
+        switch (connectResult) {
             case NET_FAIL:       errorMsg = "Network connection failed"; break;
             case NET_ENOTCONF:   errorMsg = "No WiFi network configured.\nPlease configure WiFi in device settings."; break;
             case NET_EWRONGKEY:  errorMsg = "Wrong WiFi password"; break;
@@ -458,7 +500,7 @@ void retryConnectionHandler(int button) {
     
     if (button == 1) {
         logMsg("User chose to retry connection");
-        startConnection();
+        delayedConnectionStart();
     } else {
         logMsg("User cancelled retry");
     }
