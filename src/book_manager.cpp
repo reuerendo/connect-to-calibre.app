@@ -296,7 +296,9 @@ bool BookManager::updateBook(const BookMetadata& metadata) {
 bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadata& metadata, int profileId) {
     int completed = metadata.isRead ? 1 : 0;
     int favorite = metadata.isFavorite ? 1 : 0;
+    
     int cpage = metadata.isRead ? 100 : 0;
+    int npage = metadata.isRead ? 100 : 0; 
     
     time_t completedTs = 0;
     if (!metadata.lastReadDate.empty()) {
@@ -330,7 +332,7 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
 
     if (exists) {
         const char* updateSql = 
-            "UPDATE books_settings SET completed=?, favorite=?, completed_ts=?, cpage=? "
+            "UPDATE books_settings SET completed=?, favorite=?, completed_ts=?, cpage=?, npage=? "
             "WHERE bookid=? AND profileid=?";
             
         if (sqlite3_prepare_v2(db, updateSql, -1, &stmt, nullptr) == SQLITE_OK) {
@@ -338,15 +340,17 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
             sqlite3_bind_int(stmt, 2, favorite);
             sqlite3_bind_int64(stmt, 3, completedTs);
             sqlite3_bind_int(stmt, 4, cpage);
-            sqlite3_bind_int(stmt, 5, bookId);
-            sqlite3_bind_int(stmt, 6, profileId);
+            sqlite3_bind_int(stmt, 5, npage); // Привязываем npage
+            sqlite3_bind_int(stmt, 6, bookId);
+            sqlite3_bind_int(stmt, 7, profileId);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
     } else {
+        // ДОБАВЛЕНО: npage в INSERT
         const char* insertSql = 
-            "INSERT INTO books_settings (bookid, profileid, completed, favorite, completed_ts, cpage) "
-            "VALUES (?, ?, ?, ?, ?, ?)";
+            "INSERT INTO books_settings (bookid, profileid, completed, favorite, completed_ts, cpage, npage) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)";
             
         if (sqlite3_prepare_v2(db, insertSql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int(stmt, 1, bookId);
@@ -355,6 +359,7 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
             sqlite3_bind_int(stmt, 4, favorite);
             sqlite3_bind_int64(stmt, 5, completedTs);
             sqlite3_bind_int(stmt, 6, cpage);
+            sqlite3_bind_int(stmt, 7, npage); // Привязываем npage
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
