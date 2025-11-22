@@ -58,7 +58,7 @@ static volatile bool exitRequested = false;
 static volatile bool wifiEnabling = false;
 static int wifiRetryCount = 0;
 
-// Forward declarations - must be before any function that uses them
+// Forward declarations
 int mainEventHandler(int type, int par1, int par2);
 void performExit();
 void startConnection();
@@ -201,36 +201,18 @@ bool isWiFiConnected() {
 
 bool isWiFiHardwareReady() {
     int netStatus = QueryNetwork();
-    logMsg("QueryNetwork() = 0x%X (WIFIREADY=0x%X, CONNECTED=0x%X)", 
-           netStatus, NET_WIFIREADY, NET_CONNECTED);
+    logMsg("QueryNetwork() = 0x%X", netStatus);
     return (netStatus & NET_WIFIREADY) != 0;
 }
 
-// Callback for async WiFi connection
-static int wifiConnectCallback(int status) {
-    logMsg("WiFi async callback: status=%d (NET_OK=%d)", status, NET_OK);
-    
-    wifiEnabling = false;
-    
-    if (status == NET_OK) {
-        logMsg("WiFi connected via async callback");
-        SendEvent(mainEventHandler, EVT_WIFI_READY, 0, 0);
-    } else {
-        logMsg("WiFi connection failed: %d", status);
-        SendEvent(mainEventHandler, EVT_WIFI_FAILED, status, 0);
-    }
-    
-    return 0;
-}
-
-// WiFi enable thread function
+// WiFi enable thread function - silent connection without dialogs
 void* wifiEnableThreadFunc(void* arg) {
     logMsg("WiFi enable thread started");
     wifiEnabling = true;
     
     updateConnectionStatus("Enabling WiFi...");
     
-    // First check current state
+    // Check if already connected
     if (isWiFiConnected()) {
         logMsg("WiFi already connected");
         wifiEnabling = false;
@@ -238,21 +220,36 @@ void* wifiEnableThreadFunc(void* arg) {
         return NULL;
     }
     
-    // Try to power on WiFi hardware first
-    logMsg("Calling WiFiPower(1)");
-    int result = WiFiPower(1);
-    logMsg("WiFiPower result: %d", result);
+    // Step 1: Start network manager service if not running
+    int nmStatus = NetMgrStatus();
+    logMsg("NetMgrStatus() = %d", nmStatus);
     
-    // Wait a bit for hardware to initialize
-    usleep(1000000); // 1 second
+    if (nmStatus <= 0) {
+        logMsg("Starting NetMgr service");
+        int result = NetMgr(1); // Start network manager
+        logMsg("NetMgr(1) result: %d", result);
+        usleep(500000); // Wait 500ms for service to start
+    }
     
     if (shouldStop || exitRequested) {
-        logMsg("WiFi enable cancelled");
         wifiEnabling = false;
         return NULL;
     }
     
-    // Check again after power on
+    // Step 2: Power on WiFi hardware
+    logMsg("Calling WiFiPower(1)");
+    int result = WiFiPower(1);
+    logMsg("WiFiPower(1) result: %d", result);
+    
+    // Wait for hardware to initialize
+    usleep(1500000); // 1.5 seconds
+    
+    if (shouldStop || exitRequested) {
+        wifiEnabling = false;
+        return NULL;
+    }
+    
+    // Check if connected after power on (auto-connect to known network)
     if (isWiFiConnected()) {
         logMsg("WiFi connected after power on");
         wifiEnabling = false;
@@ -262,47 +259,27 @@ void* wifiEnableThreadFunc(void* arg) {
     
     updateConnectionStatus("Connecting to WiFi...");
     
-    // Use NetConnectAsync for non-blocking connection with system UI
-    logMsg("Calling NetConnectAsync");
-    result = NetConnectAsync(wifiConnectCallback);
-    logMsg("NetConnectAsync result: %d", result);
+    // Step 3: Try silent connect using NetConnectSilent
+    logMsg("Calling NetConnectSilent(NULL)");
+    result = NetConnectSilent(NULL);
+    logMsg("NetConnectSilent result: %d", result);
     
-    if (result != NET_OK && result != NET_CONNECT) {
-        logMsg("NetConnectAsync failed immediately: %d", result);
-        
-        // Try synchronous connect as fallback
-        logMsg("Trying synchronous NetConnect2");
-        result = NetConnect2(NULL, 1); // showHourglass = 1
-        logMsg("NetConnect2 result: %d", result);
-        
-        wifiEnabling = false;
-        
-        if (result == NET_OK || isWiFiConnected()) {
-            logMsg("WiFi connected via NetConnect2");
-            SendEvent(mainEventHandler, EVT_WIFI_READY, 0, 0);
-        } else {
-            logMsg("All WiFi connection methods failed");
-            SendEvent(mainEventHandler, EVT_WIFI_FAILED, result, 0);
-        }
-        return NULL;
-    }
-    
-    // NetConnectAsync started successfully, callback will handle the rest
-    // Wait here to keep thread alive and check for cancellation
-    const int maxWaitSeconds = 30;
+    // Wait for connection with timeout
+    const int maxWaitSeconds = 20;
     const int checkIntervalMs = 500;
     int waitedMs = 0;
     
-    while (waitedMs < maxWaitSeconds * 1000 && wifiEnabling) {
+    while (waitedMs < maxWaitSeconds * 1000) {
         if (shouldStop || exitRequested) {
-            logMsg("WiFi enable cancelled during async wait");
+            logMsg("WiFi enable cancelled during wait");
             wifiEnabling = false;
             return NULL;
         }
         
-        // Check if already connected (callback might have been called)
-        if (isWiFiConnected() && !wifiEnabling) {
-            logMsg("WiFi connected during async wait");
+        if (isWiFiConnected()) {
+            logMsg("WiFi connected after %d ms", waitedMs);
+            wifiEnabling = false;
+            SendEvent(mainEventHandler, EVT_WIFI_READY, 0, 0);
             return NULL;
         }
         
@@ -310,13 +287,9 @@ void* wifiEnableThreadFunc(void* arg) {
         waitedMs += checkIntervalMs;
     }
     
-    // If we're still here after timeout and still enabling, something is wrong
-    if (wifiEnabling) {
-        logMsg("WiFi async timeout after %d seconds", maxWaitSeconds);
-        wifiEnabling = false;
-        SendEvent(mainEventHandler, EVT_WIFI_FAILED, NET_ETIMEOUT, 0);
-    }
-    
+    logMsg("WiFi connection timeout after %d seconds", maxWaitSeconds);
+    wifiEnabling = false;
+    SendEvent(mainEventHandler, EVT_WIFI_FAILED, NET_ETIMEOUT, 0);
     return NULL;
 }
 
@@ -556,7 +529,7 @@ void wifiFailedHandler(int button) {
     
     if (button == 1) {
         logMsg("User chose to retry WiFi");
-        wifiRetryCount = 0; // Reset counter for manual retry
+        wifiRetryCount = 0;
         startConnection();
     } else {
         logMsg("User cancelled WiFi retry");
@@ -636,18 +609,18 @@ int mainEventHandler(int type, int par1, int par2) {
             
         case EVT_WIFI_READY:
             logMsg("WiFi ready, starting Calibre connection");
-            wifiRetryCount = 0; // Reset retry counter on success
+            wifiRetryCount = 0;
             startConnectionAfterWifi();
             break;
             
         case EVT_WIFI_FAILED:
             logMsg("WiFi failed event received, error code: %d", par1);
             updateConnectionStatus("WiFi not connected");
-            // Silently retry a few times, then show message only if still failing
-            if (wifiRetryCount < 2) {
+            // Auto-retry silently a few times
+            if (wifiRetryCount < 3) {
                 wifiRetryCount++;
                 logMsg("Auto-retrying WiFi connection (attempt %d)", wifiRetryCount);
-                SetHardTimer("wifi_retry", wifiRetryTimerProc, 2000);
+                SetHardTimer("wifi_retry", wifiRetryTimerProc, 3000);
             } else {
                 wifiRetryCount = 0;
                 Dialog(ICON_WARNING, 
