@@ -1,754 +1,787 @@
-#include "inkview.h"
-#include "network.h"
-#include "calibre_protocol.h"
-#include "book_manager.h"
-#include <string.h>
-#include <stdlib.h>
 #include <stdio.h>
-#include <stdarg.h>
-#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <time.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <fcntl.h>
 
-// Custom events for safe UI updates from thread
-#define EVT_USER_UPDATE 20001
-#define EVT_CONNECTION_FAILED 20002
-#define EVT_SYNC_COMPLETE 20003
-#define EVT_WIFI_READY 20004
-#define EVT_WIFI_FAILED 20005
+#include "inkview.h"
 
-// Debug logging
-static FILE* logFile = NULL;
+// Application constants
+#define APP_NAME "Calibre Connect"
+#define VERSION "1.0.0"
+#define CONFIG_FILE CONFIGPATH "/calibre_connect.cfg"
+#define LOG_FILE USERDATA "/calibre_connect.log"
+#define CACHE_DIR USERDATA "/calibre_cache"
 
-// Global config
-static iconfig *appConfig = NULL;
-static const char *CONFIG_FILE = "/mnt/ext1/system/config/calibre-connect.cfg";
+// Network constants
+#define DEFAULT_PORT 9090
+#define BUFFER_SIZE 65536
+#define CONNECT_TIMEOUT 30
+#define WIFI_TIMEOUT 15000  // 15 seconds
+#define WIFI_RETRY_DELAY 3000  // 3 seconds
+#define MAX_RETRY_COUNT 3
 
-// Config keys
-static const char *KEY_IP = "ip";
-static const char *KEY_PORT = "port";
-static const char *KEY_PASSWORD = "password";
-static const char *KEY_READ_COLUMN = "read_column";
-static const char *KEY_READ_DATE_COLUMN = "read_date_column";
-static const char *KEY_FAVORITE_COLUMN = "favorite_column";
-static const char *KEY_CONNECTION = "connection_enabled";
+// Protocol opcodes (from driver.py)
+#define OP_NOOP 12
+#define OP_OK 0
+#define OP_ERROR 20
+#define OP_GET_INITIALIZATION_INFO 9
+#define OP_GET_DEVICE_INFORMATION 3
+#define OP_FREE_SPACE 5
+#define OP_TOTAL_SPACE 4
+#define OP_GET_BOOK_COUNT 6
+#define OP_SEND_BOOKLISTS 7
+#define OP_SEND_BOOK 8
+#define OP_DELETE_BOOK 13
+#define OP_SET_CALIBRE_DEVICE_INFO 1
 
-// Global connection status buffer and error message
-static char connectionStatusBuffer[128] = "Disconnected"; 
-static char connectionErrorBuffer[256] = "";
-static char syncCompleteBuffer[256] = "";
-static int booksReceivedCount = 0;
+// Application state
+typedef struct {
+    int socketFd;
+    int connected;
+    int wifiConnected;
+    pthread_t connectionThread;
+    pthread_t wifiEnableThread;
+    char statusMessage[256];
+    iconfig* config;
+    int retryCount;
+    int exitRequested;
+} AppState;
 
-// Default values
-static const char *DEFAULT_IP = "192.168.1.100";
-static const char *DEFAULT_PORT = "9090";
-static const char *DEFAULT_PASSWORD = "";
-static const char *DEFAULT_READ_COLUMN = "#read";
-static const char *DEFAULT_READ_DATE_COLUMN = "#read_date";
-static const char *DEFAULT_FAVORITE_COLUMN = "#favorite";
+static AppState g_state = {
+    .socketFd = -1,
+    .connected = 0,
+    .wifiConnected = 0,
+    .connectionThread = 0,
+    .wifiEnableThread = 0,
+    .statusMessage = "Initializing...",
+    .config = NULL,
+    .retryCount = 0,
+    .exitRequested = 0
+};
 
-// Connection state
-static NetworkManager* networkManager = NULL;
-static BookManager* bookManager = NULL;
-static CalibreProtocol* protocol = NULL;
-static pthread_t connectionThread;
-static pthread_t wifiThread;
-static bool isConnecting = false;
-static bool shouldStop = false;
-static volatile bool exitRequested = false;
-static volatile bool wifiEnabling = false;
-static int wifiRetryCount = 0;
+// Configuration structure
+typedef struct {
+    char serverIp[64];
+    int serverPort;
+    char deviceName[128];
+    int autoConnect;
+} Config;
 
-// Forward declarations
-int mainEventHandler(int type, int par1, int par2);
-void performExit();
-void startConnection();
-void startConnectionAfterWifi();
-void startWifiEnable();
+static Config g_config = {
+    .serverIp = "",
+    .serverPort = DEFAULT_PORT,
+    .deviceName = "PocketBook",
+    .autoConnect = 1
+};
 
-// Logging functions
-void initLog() {
-    const char* logPath = "/mnt/ext1/system/calibre-connect.log";
-    logFile = iv_fopen(logPath, "a");
-    if (logFile) {
+// Function declarations
+static void loadConfig(void);
+static void saveConfig(void);
+static void initializeApp(void);
+static void cleanupApp(void);
+static void updateStatus(const char* message);
+static void startConnection(void);
+static void stopConnection(void);
+static int mainHandler(int type, int par1, int par2);
+static void openConfigEditor(void);
+static void drawMainScreen(void);
+
+// Logging
+static FILE* g_logFile = NULL;
+
+static void logMessage(const char* format, ...) {
+    if (!g_logFile) {
+        g_logFile = iv_fopen(LOG_FILE, "a");
+        if (!g_logFile) return;
+        
         time_t now = time(NULL);
-        fprintf(logFile, "\n=== Calibre Connect Started [%s] ===\n", ctime(&now));
-        fflush(logFile);
-    }
-}
-
-void logMsg(const char* format, ...) {
-    if (!logFile) {
-        initLog(); 
-        if (!logFile) return;
+        fprintf(g_logFile, "\n=== Calibre Connect Started [%s] ===\n", ctime(&now));
+        fflush(g_logFile);
     }
     
+    char timestamp[32];
     time_t now = time(NULL);
     struct tm* tm_info = localtime(&now);
-    fprintf(logFile, "[%02d:%02d:%02d] ", 
-            tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
+    strftime(timestamp, sizeof(timestamp), "%H:%M:%S", tm_info);
+    
+    fprintf(g_logFile, "[%s] ", timestamp);
     
     va_list args;
     va_start(args, format);
-    vfprintf(logFile, format, args);
+    vfprintf(g_logFile, format, args);
     va_end(args);
-    fprintf(logFile, "\n");
-    fflush(logFile);
+    
+    fprintf(g_logFile, "\n");
+    fflush(g_logFile);
 }
 
-void closeLog() {
-    if (logFile) {
-        time_t now = time(NULL);
-        fprintf(logFile, "=== Calibre Connect Closed [%s] ===\n", ctime(&now));
-        fflush(logFile);
-        iv_fclose(logFile);
-        logFile = NULL;
+// Configuration management
+static void loadConfig(void) {
+    g_state.config = OpenConfig(CONFIG_FILE, NULL);
+    if (!g_state.config) {
+        logMessage("Failed to open config, using defaults");
+        return;
+    }
+    
+    const char* serverIp = ReadString(g_state.config, "server_ip", "");
+    strncpy(g_config.serverIp, serverIp, sizeof(g_config.serverIp) - 1);
+    
+    g_config.serverPort = ReadInt(g_state.config, "server_port", DEFAULT_PORT);
+    
+    const char* deviceName = ReadString(g_state.config, "device_name", "PocketBook");
+    strncpy(g_config.deviceName, deviceName, sizeof(g_config.deviceName) - 1);
+    
+    g_config.autoConnect = ReadInt(g_state.config, "auto_connect", 1);
+    
+    logMessage("Config loaded: IP=%s, Port=%d, Device=%s, AutoConnect=%d",
+               g_config.serverIp, g_config.serverPort, g_config.deviceName, g_config.autoConnect);
+}
+
+static void saveConfig(void) {
+    if (!g_state.config) {
+        g_state.config = OpenConfig(CONFIG_FILE, NULL);
+        if (!g_state.config) {
+            logMessage("Failed to create config for saving");
+            return;
+        }
+    }
+    
+    WriteString(g_state.config, "server_ip", g_config.serverIp);
+    WriteInt(g_state.config, "server_port", g_config.serverPort);
+    WriteString(g_state.config, "device_name", g_config.deviceName);
+    WriteInt(g_state.config, "auto_connect", g_config.autoConnect);
+    
+    SaveConfig(g_state.config);
+    logMessage("Config saved");
+}
+
+static void updateStatus(const char* message) {
+    strncpy(g_state.statusMessage, message, sizeof(g_state.statusMessage) - 1);
+    g_state.statusMessage[sizeof(g_state.statusMessage) - 1] = '\0';
+    
+    logMessage("Status update: %s", message);
+    
+    drawMainScreen();
+    FullUpdate();
+}
+
+// WiFi management - using new Network Manager API
+static void* wifiEnableThread(void* arg) {
+    (void)arg;
+    logMessage("WiFi enable thread started");
+    
+    updateStatus("Enabling WiFi...");
+    
+    // Ensure Network Manager is running
+    int netmgrStatus = NetMgrStatus();
+    logMessage("NetMgrStatus() = %d", netmgrStatus);
+    
+    if (netmgrStatus <= 0) {
+        logMessage("Starting Network Manager");
+        int result = NetMgr(1);
+        logMessage("NetMgr(1) result: %d", result);
+        
+        if (result != 0) {
+            logMessage("Failed to start Network Manager");
+            updateStatus("Network error");
+            g_state.wifiEnableThread = 0;
+            return NULL;
+        }
+        
+        usleep(1000000); // Wait 1 second for NetMgr to initialize
+    }
+    
+    // Enable WiFi hardware
+    logMessage("Calling WiFiPower(1)");
+    int wifiResult = WiFiPower(1);
+    logMessage("WiFiPower(1) result: %d", wifiResult);
+    
+    if (wifiResult != 0) {
+        logMessage("WiFiPower failed");
+        updateStatus("WiFi hardware error");
+        g_state.wifiEnableThread = 0;
+        return NULL;
+    }
+    
+    // Wait for WiFi to initialize
+    usleep(2000000); // 2 seconds
+    
+    int netStatus = QueryNetwork();
+    logMessage("QueryNetwork after WiFiPower: 0x%x", netStatus);
+    
+    if (!(netStatus & NET_WIFIREADY)) {
+        logMessage("WiFi not ready after enabling");
+        updateStatus("WiFi not ready");
+        g_state.wifiEnableThread = 0;
+        return NULL;
+    }
+    
+    updateStatus("Connecting to WiFi...");
+    
+    // Get list of configured networks using NetConnect with empty name
+    // This will try to connect to best available known network
+    logMessage("Attempting auto-connect to known network");
+    int connectResult = NetConnectSilent("");
+    logMessage("NetConnectSilent result: %d", connectResult);
+    
+    if (connectResult == NET_OK || connectResult == NET_CONNECT) {
+        logMessage("Connection initiated successfully");
+        // Wait for connection event (EVT_NET_CONNECTED)
+        // Connection status will be handled in event handler
+    } else {
+        logMessage("Auto-connect failed with code: %d", connectResult);
+        updateStatus("No known WiFi networks");
+    }
+    
+    g_state.wifiEnableThread = 0;
+    return NULL;
+}
+
+// Calibre protocol handling
+static int sendMessage(int opcode, const char* jsonData) {
+    if (g_state.socketFd < 0) {
+        logMessage("Socket not connected");
+        return -1;
+    }
+    
+    char buffer[BUFFER_SIZE];
+    int dataLen = jsonData ? strlen(jsonData) : 0;
+    
+    snprintf(buffer, sizeof(buffer), "%d[%d,{}]", dataLen + 10, opcode);
+    if (jsonData && dataLen > 0) {
+        // Replace empty {} with actual JSON data
+        char* jsonPos = strstr(buffer, "{}");
+        if (jsonPos) {
+            snprintf(jsonPos, sizeof(buffer) - (jsonPos - buffer), "%s]", jsonData);
+        }
+    }
+    
+    int len = strlen(buffer);
+    int sent = send(g_state.socketFd, buffer, len, 0);
+    
+    if (sent < 0) {
+        logMessage("Send failed: %s", strerror(errno));
+        return -1;
+    }
+    
+    logMessage("Sent message: opcode=%d, len=%d", opcode, sent);
+    return 0;
+}
+
+static int receiveMessage(int* opcode, char* jsonData, int maxLen) {
+    if (g_state.socketFd < 0) return -1;
+    
+    char lenBuf[16] = {0};
+    int pos = 0;
+    
+    // Read length prefix
+    while (pos < sizeof(lenBuf) - 1) {
+        char c;
+        int n = recv(g_state.socketFd, &c, 1, 0);
+        if (n <= 0) {
+            logMessage("Receive failed reading length: %s", strerror(errno));
+            return -1;
+        }
+        
+        if (c == '[') break;
+        lenBuf[pos++] = c;
+    }
+    
+    int totalLen = atoi(lenBuf);
+    if (totalLen <= 0 || totalLen > BUFFER_SIZE) {
+        logMessage("Invalid message length: %d", totalLen);
+        return -1;
+    }
+    
+    // Read JSON data
+    char buffer[BUFFER_SIZE];
+    buffer[0] = '[';
+    int received = 1;
+    
+    while (received < totalLen) {
+        int n = recv(g_state.socketFd, buffer + received, totalLen - received, 0);
+        if (n <= 0) {
+            logMessage("Receive failed reading data: %s", strerror(errno));
+            return -1;
+        }
+        received += n;
+    }
+    
+    buffer[received] = '\0';
+    
+    // Parse opcode from JSON array [opcode, {...}]
+    if (sscanf(buffer, "[%d,", opcode) != 1) {
+        logMessage("Failed to parse opcode from: %s", buffer);
+        return -1;
+    }
+    
+    // Extract JSON data if needed
+    if (jsonData) {
+        char* dataStart = strchr(buffer, '{');
+        if (dataStart) {
+            char* dataEnd = strrchr(buffer, '}');
+            if (dataEnd) {
+                int dataLen = dataEnd - dataStart + 1;
+                if (dataLen < maxLen) {
+                    strncpy(jsonData, dataStart, dataLen);
+                    jsonData[dataLen] = '\0';
+                }
+            }
+        }
+    }
+    
+    logMessage("Received message: opcode=%d, len=%d", *opcode, received);
+    return 0;
+}
+
+static void* calibreConnectThread(void* arg) {
+    (void)arg;
+    
+    updateStatus("Connecting to Calibre...");
+    
+    struct sockaddr_in serverAddr;
+    g_state.socketFd = socket(AF_INET, SOCK_STREAM, 0);
+    
+    if (g_state.socketFd < 0) {
+        logMessage("Failed to create socket: %s", strerror(errno));
+        updateStatus("Socket error");
+        return NULL;
+    }
+    
+    // Set socket timeout
+    struct timeval timeout;
+    timeout.tv_sec = CONNECT_TIMEOUT;
+    timeout.tv_usec = 0;
+    setsockopt(g_state.socketFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(g_state.socketFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(g_config.serverPort);
+    
+    if (inet_pton(AF_INET, g_config.serverIp, &serverAddr.sin_addr) <= 0) {
+        logMessage("Invalid server IP: %s", g_config.serverIp);
+        updateStatus("Invalid server IP");
+        close(g_state.socketFd);
+        g_state.socketFd = -1;
+        return NULL;
+    }
+    
+    logMessage("Connecting to %s:%d", g_config.serverIp, g_config.serverPort);
+    
+    if (connect(g_state.socketFd, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+        logMessage("Connection failed: %s", strerror(errno));
+        updateStatus("Connection failed");
+        close(g_state.socketFd);
+        g_state.socketFd = -1;
+        return NULL;
+    }
+    
+    g_state.connected = 1;
+    updateStatus("Connected to Calibre");
+    logMessage("Connected successfully");
+    
+    // Send initialization info
+    char initJson[512];
+    snprintf(initJson, sizeof(initJson),
+             "{\"appVersion\":\"%s\","
+             "\"deviceName\":\"%s\","
+             "\"canStreamBooks\":true,"
+             "\"canStreamMetadata\":true,"
+             "\"canReceiveBookBinary\":true,"
+             "\"canDeleteMultipleBooks\":true,"
+             "\"canUseCachedMetadata\":true,"
+             "\"acceptedExtensions\":[\"epub\",\"pdf\",\"mobi\",\"azw3\",\"fb2\",\"txt\"]}",
+             VERSION, g_config.deviceName);
+    
+    // Handle Calibre protocol
+    int running = 1;
+    while (running && !g_state.exitRequested) {
+        int opcode;
+        char jsonData[BUFFER_SIZE];
+        
+        if (receiveMessage(&opcode, jsonData, sizeof(jsonData)) < 0) {
+            logMessage("Connection lost");
+            break;
+        }
+        
+        switch (opcode) {
+            case OP_GET_INITIALIZATION_INFO:
+                sendMessage(OP_OK, initJson);
+                break;
+                
+            case OP_GET_DEVICE_INFORMATION:
+                {
+                    char devInfo[512];
+                    snprintf(devInfo, sizeof(devInfo),
+                             "{\"device_info\":{\"device_name\":\"%s\","
+                             "\"device_version\":\"%s\"},"
+                             "\"device_version\":\"%s\","
+                             "\"version\":\"%s\"}",
+                             g_config.deviceName, GetSoftwareVersion(),
+                             GetSoftwareVersion(), VERSION);
+                    sendMessage(OP_OK, devInfo);
+                }
+                break;
+                
+            case OP_FREE_SPACE:
+            case OP_TOTAL_SPACE:
+                {
+                    struct statfs stat;
+                    if (statfs(FLASHDIR, &stat) == 0) {
+                        long long space = (opcode == OP_FREE_SPACE) ?
+                            (long long)stat.f_bavail * stat.f_bsize :
+                            (long long)stat.f_blocks * stat.f_bsize;
+                        
+                        char spaceJson[128];
+                        snprintf(spaceJson, sizeof(spaceJson),
+                                "{\"total_space_on_device\":%lld,"
+                                "\"free_space_on_device\":%lld}",
+                                space, space);
+                        sendMessage(OP_OK, spaceJson);
+                    } else {
+                        sendMessage(OP_ERROR, "{\"message\":\"Failed to get storage info\"}");
+                    }
+                }
+                break;
+                
+            case OP_NOOP:
+                sendMessage(OP_OK, "{}");
+                break;
+                
+            default:
+                logMessage("Unhandled opcode: %d", opcode);
+                sendMessage(OP_ERROR, "{\"message\":\"Opcode not implemented\"}");
+                break;
+        }
+    }
+    
+    // Cleanup
+    if (g_state.socketFd >= 0) {
+        close(g_state.socketFd);
+        g_state.socketFd = -1;
+    }
+    
+    g_state.connected = 0;
+    g_state.connectionThread = 0;
+    
+    if (!g_state.exitRequested) {
+        updateStatus("Disconnected");
+    }
+    
+    return NULL;
+}
+
+// UI functions
+static void drawMainScreen(void) {
+    ClearScreen();
+    
+    SetFont(OpenFont(DEFAULTFONT, 28, 1), BLACK);
+    DrawString(20, 40, APP_NAME);
+    
+    SetFont(OpenFont(DEFAULTFONT, 20, 1), BLACK);
+    
+    int y = 100;
+    char line[256];
+    
+    // Status
+    snprintf(line, sizeof(line), "Status: %s", g_state.statusMessage);
+    DrawString(20, y, line);
+    y += 40;
+    
+    // WiFi status
+    int netStatus = QueryNetwork();
+    NET_STATE netState = GetNetState();
+    const char* wifiStatus = (netState == CONNECTED) ? "Connected" :
+                            (netStatus & NET_WIFIREADY) ? "Ready" : "Off";
+    snprintf(line, sizeof(line), "WiFi: %s", wifiStatus);
+    DrawString(20, y, line);
+    y += 40;
+    
+    // Calibre connection
+    snprintf(line, sizeof(line), "Calibre: %s", g_state.connected ? "Connected" : "Not connected");
+    DrawString(20, y, line);
+    y += 40;
+    
+    // Server info
+    if (strlen(g_config.serverIp) > 0) {
+        snprintf(line, sizeof(line), "Server: %s:%d", g_config.serverIp, g_config.serverPort);
+        DrawString(20, y, line);
+        y += 40;
+    }
+    
+    // Instructions
+    y = ScreenHeight() - 150;
+    SetFont(OpenFont(DEFAULTFONT, 18, 1), DGRAY);
+    DrawString(20, y, "Press Menu to configure");
+    y += 30;
+    DrawString(20, y, "Press OK to connect/disconnect");
+    y += 30;
+    DrawString(20, y, "Press Back to exit");
+}
+
+static void startConnection(void) {
+    logMessage("startConnection called");
+    
+    // Check if WiFi is connected
+    NET_STATE netState = GetNetState();
+    logMessage("GetNetState() = %d (CONNECTED=2)", netState);
+    
+    if (netState != CONNECTED) {
+        // WiFi not connected, start connection
+        logMessage("WiFi not connected, starting WiFi enable");
+        
+        if (!g_state.wifiEnableThread) {
+            logMessage("Starting WiFi enable thread");
+            pthread_t thread;
+            if (pthread_create(&thread, NULL, wifiEnableThread, NULL) == 0) {
+                g_state.wifiEnableThread = thread;
+                pthread_detach(thread);
+                logMessage("WiFi enable thread started");
+            } else {
+                logMessage("Failed to create WiFi enable thread");
+                updateStatus("Thread error");
+            }
+        }
+        
+        // Set timeout for WiFi connection
+        SetWeakTimer("WIFI_TIMEOUT", wifiTimeoutTimer, WIFI_TIMEOUT);
+    } else {
+        // WiFi already connected, start Calibre connection
+        logMessage("WiFi already connected, starting Calibre connection");
+        
+        if (!g_state.connectionThread) {
+            pthread_t thread;
+            if (pthread_create(&thread, NULL, calibreConnectThread, NULL) == 0) {
+                g_state.connectionThread = thread;
+                pthread_detach(thread);
+                logMessage("Started Calibre connection thread");
+            } else {
+                logMessage("Failed to create Calibre connection thread");
+                updateStatus("Thread error");
+            }
+        }
     }
 }
 
-// Timer callback for WiFi retry
-void wifiRetryTimerProc() {
-    logMsg("WiFi retry timer fired");
+static void stopConnection(void) {
+    logMessage("Stopping connection...");
+    
+    g_state.exitRequested = 1;
+    
+    if (g_state.socketFd >= 0) {
+        shutdown(g_state.socketFd, SHUT_RDWR);
+        close(g_state.socketFd);
+        g_state.socketFd = -1;
+    }
+    
+    g_state.connected = 0;
+    
+    // Wait for threads to finish
+    if (g_state.connectionThread) {
+        pthread_join(g_state.connectionThread, NULL);
+        g_state.connectionThread = 0;
+    }
+    
+    updateStatus("Stopped");
+    logMessage("Connection stopped");
+}
+
+// Timer callbacks
+static void wifiTimeoutTimer(void) {
+    logMessage("WiFi connection timeout after %d seconds", WIFI_TIMEOUT / 1000);
+    
+    // Cancel connection attempt
+    g_state.wifiEnableThread = 0;
+    
+    updateStatus("WiFi connection timeout");
+}
+
+static void wifiRetryTimer(void) {
+    logMessage("WiFi retry timer fired");
     startConnection();
 }
 
-// Config editor structure
+// Configuration editor
 static iconfigedit configItems[] = {
-    {
-        CFG_INFO, NULL,
-        (char*)"Connection", NULL,
-        (char*)KEY_CONNECTION,
-        connectionStatusBuffer, 
-        NULL, NULL, NULL
-    },
-    {
-        CFG_IPADDR, NULL,
-        (char *)"IP Address", NULL,
-        (char *)KEY_IP,
-        (char *)DEFAULT_IP,
-        NULL, NULL
-    },
-    {
-        CFG_NUMBER, NULL,
-        (char *)"Port", NULL,
-        (char *)KEY_PORT,
-        (char *)DEFAULT_PORT,
-        NULL, NULL
-    },
-    {
-        CFG_PASSWORD, NULL,
-        (char *)"Password", NULL,
-        (char *)KEY_PASSWORD,
-        (char *)DEFAULT_PASSWORD,
-        NULL, NULL
-    },
-    {
-        CFG_TEXT, NULL,
-        (char *)"Read Status Column", NULL,
-        (char *)KEY_READ_COLUMN,
-        (char *)DEFAULT_READ_COLUMN,
-        NULL, NULL
-    },
-    {
-        CFG_TEXT, NULL,
-        (char *)"Read Date Column", NULL,
-        (char *)KEY_READ_DATE_COLUMN,
-        (char *)DEFAULT_READ_DATE_COLUMN,
-        NULL, NULL
-    },
-    {
-        CFG_TEXT, NULL,
-        (char *)"Favorite Column", NULL,
-        (char *)KEY_FAVORITE_COLUMN,
-        (char *)DEFAULT_FAVORITE_COLUMN,
-        NULL, NULL
-    },
-    { 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL }
+    {CFG_TEXT, NULL, "Server IP", "IP address of Calibre server", "server_ip", "", NULL, NULL, NULL},
+    {CFG_NUMBER, NULL, "Server Port", "Port number", "server_port", "9090", NULL, NULL, NULL},
+    {CFG_TEXT, NULL, "Device Name", "Name shown in Calibre", "device_name", "PocketBook", NULL, NULL, NULL},
+    {CFG_INDEX, NULL, "Auto Connect", "Connect on startup", "auto_connect", "1", 
+     (char*[]){"No", "Yes", NULL}, NULL, NULL},
+    {0}
 };
 
-// Status update functions
-void updateConnectionStatus(const char* status) {
-    logMsg("Status update: %s", status);
-    snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "%s", status);
+static void configHandler(void) {
+    logMessage("Config saved by user");
     
-    if (appConfig) {
-        WriteString(appConfig, KEY_CONNECTION, status);
-    }
+    // Reload config from file
+    loadConfig();
     
-    SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+    drawMainScreen();
+    FullUpdate();
 }
 
-void notifyConnectionFailed(const char* errorMsg) {
-    logMsg("Connection failed: %s", errorMsg);
-    snprintf(connectionErrorBuffer, sizeof(connectionErrorBuffer), "%s", errorMsg);
-    SendEvent(mainEventHandler, EVT_CONNECTION_FAILED, 0, 0);
+static void openConfigEditor(void) {
+    logMessage("Opening config editor");
+    
+    OpenConfigEditor("Calibre Connect Settings", g_state.config, configItems, configHandler, NULL);
 }
 
-void notifySyncComplete(int booksReceived) {
-    logMsg("Sync complete: %d books received", booksReceived);
-    booksReceivedCount = booksReceived;
-    snprintf(syncCompleteBuffer, sizeof(syncCompleteBuffer), 
-             "Synchronization complete!\n%d book%s received from Calibre.", 
-             booksReceived, booksReceived == 1 ? "" : "s");
-    SendEvent(mainEventHandler, EVT_SYNC_COMPLETE, 0, 0);
-}
-
-// WiFi status check functions
-bool isWiFiConnected() {
-    NET_STATE state = GetNetState();
-    logMsg("GetNetState() = %d (CONNECTED=%d)", state, CONNECTED);
-    return state == CONNECTED;
-}
-
-bool isWiFiHardwareReady() {
-    int netStatus = QueryNetwork();
-    logMsg("QueryNetwork() = 0x%X", netStatus);
-    return (netStatus & NET_WIFIREADY) != 0;
-}
-
-// Try to find and connect to a known WiFi network
-bool tryConnectToKnownNetwork() {
-    logMsg("Trying to connect to known network");
+// Event handler
+static int mainHandler(int type, int par1, int par2) {
+    logMessage("Event: %d, p1: %d, p2: %d", type, par1, par2);
     
-    // Get list of known/configured networks
-    char** networks = EnumConnections();
-    if (!networks || !networks[0]) {
-        logMsg("No configured networks found");
-        return false;
-    }
-    
-    // Log available configured networks
-    for (int i = 0; networks[i]; i++) {
-        logMsg("Configured network[%d]: %s", i, networks[i]);
-    }
-    
-    // Try to connect to the first configured network
-    const char* networkName = networks[0];
-    logMsg("Attempting to connect to: %s", networkName);
-    
-    int result = NetConnectSilent(networkName);
-    logMsg("NetConnectSilent(%s) result: %d", networkName, result);
-    
-    return (result == NET_OK || result == NET_CONNECT);
-}
-
-// WiFi enable thread function - silent connection without dialogs
-void* wifiEnableThreadFunc(void* arg) {
-    logMsg("WiFi enable thread started");
-    wifiEnabling = true;
-    
-    updateConnectionStatus("Enabling WiFi...");
-    
-    // Check if already connected
-    if (isWiFiConnected()) {
-        logMsg("WiFi already connected");
-        wifiEnabling = false;
-        SendEvent(mainEventHandler, EVT_WIFI_READY, 0, 0);
-        return NULL;
-    }
-    
-    // Step 1: Start network manager service if not running
-    int nmStatus = NetMgrStatus();
-    logMsg("NetMgrStatus() = %d", nmStatus);
-    
-    if (nmStatus <= 0) {
-        logMsg("Starting NetMgr service");
-        int result = NetMgr(1);
-        logMsg("NetMgr(1) result: %d", result);
-        usleep(500000);
-    }
-    
-    if (shouldStop || exitRequested) {
-        wifiEnabling = false;
-        return NULL;
-    }
-    
-    // Step 2: Power on WiFi hardware
-    logMsg("Calling WiFiPower(1)");
-    int result = WiFiPower(1);
-    logMsg("WiFiPower(1) result: %d", result);
-    
-    // Wait for hardware to initialize
-    usleep(2000000); // 2 seconds
-    
-    if (shouldStop || exitRequested) {
-        wifiEnabling = false;
-        return NULL;
-    }
-    
-    // Check hardware status
-    int netStatus = QueryNetwork();
-    logMsg("QueryNetwork after WiFiPower: 0x%X", netStatus);
-    
-    // Check if connected after power on
-    if (isWiFiConnected()) {
-        logMsg("WiFi connected after power on");
-        wifiEnabling = false;
-        SendEvent(mainEventHandler, EVT_WIFI_READY, 0, 0);
-        return NULL;
-    }
-    
-    updateConnectionStatus("Connecting to WiFi...");
-    
-    // Step 3: Try to connect to known network
-    bool connectStarted = tryConnectToKnownNetwork();
-    
-    if (!connectStarted) {
-        // If no known networks, try scanning and auto-connect
-        logMsg("No known networks, starting WiFi scan");
-        
-        result = WiFiScanProcessStart();
-        logMsg("WiFiScanProcessStart result: %d", result);
-        
-        if (result == 0) {
-            usleep(3000000); // Wait 3 seconds for scan
-            
-            iv_wifi_ap_list* apList = WiFiScanProcessGetResults();
-            if (apList && apList->ap_quantity > 0) {
-                logMsg("Found %d access points", apList->ap_quantity);
-                for (int i = 0; i < apList->ap_quantity && i < 5; i++) {
-                    logMsg("AP[%d]: %s (quality=%d)", i, 
-                           apList->apinfo[i].ssid, 
-                           apList->apinfo[i].quality);
-                }
-            } else {
-                logMsg("No access points found");
-            }
-            
-            WiFiScanProcessStop();
-            
-            if (apList) {
-                free(apList);
-            }
-        }
-        
-        // Try connecting again after scan
-        tryConnectToKnownNetwork();
-    }
-    
-    // Wait for connection with timeout
-    const int maxWaitSeconds = 15;
-    const int checkIntervalMs = 500;
-    int waitedMs = 0;
-    
-    while (waitedMs < maxWaitSeconds * 1000) {
-        if (shouldStop || exitRequested) {
-            logMsg("WiFi enable cancelled during wait");
-            wifiEnabling = false;
-            return NULL;
-        }
-        
-        // Check connection status
-        NET_STATE state = GetNetState();
-        if (state == CONNECTED) {
-            logMsg("WiFi connected after %d ms", waitedMs);
-            wifiEnabling = false;
-            SendEvent(mainEventHandler, EVT_WIFI_READY, 0, 0);
-            return NULL;
-        }
-        
-        if (state == CONNECTING) {
-            logMsg("WiFi connecting... (%d ms)", waitedMs);
-        }
-        
-        usleep(checkIntervalMs * 1000);
-        waitedMs += checkIntervalMs;
-    }
-    
-    logMsg("WiFi connection timeout after %d seconds", maxWaitSeconds);
-    wifiEnabling = false;
-    SendEvent(mainEventHandler, EVT_WIFI_FAILED, NET_ETIMEOUT, 0);
-    return NULL;
-}
-
-// Start WiFi enable process
-void startWifiEnable() {
-    if (wifiEnabling) {
-        logMsg("WiFi enable already in progress");
-        return;
-    }
-    
-    logMsg("Starting WiFi enable thread");
-    
-    if (pthread_create(&wifiThread, NULL, wifiEnableThreadFunc, NULL) != 0) {
-        logMsg("Failed to create WiFi enable thread");
-        updateConnectionStatus("WiFi enable failed");
-        return;
-    }
-    
-    pthread_detach(wifiThread);
-}
-
-// Connection thread function
-void* connectionThreadFunc(void* arg) {
-    logMsg("Connection thread started");
-    isConnecting = true;
-    
-    updateConnectionStatus("Connecting...");
-    
-    const char* ip = ReadString(appConfig, KEY_IP, DEFAULT_IP);
-    int port = ReadInt(appConfig, KEY_PORT, atoi(DEFAULT_PORT));
-    
-    const char* encryptedPassword = ReadString(appConfig, KEY_PASSWORD, DEFAULT_PASSWORD);
-    std::string password;
-    
-    if (encryptedPassword && strlen(encryptedPassword) > 0) {
-        if (encryptedPassword[0] == '$') {
-            const char* decrypted = ReadSecret(appConfig, KEY_PASSWORD, "");
-            if (decrypted) password = decrypted;
-        } else {
-            password = encryptedPassword;
-        }
-    } else {
-        password = "";
-    }
-    
-    logMsg("Connecting to %s:%d", ip, port);
-    
-    if (shouldStop) {
-        logMsg("Connection cancelled before connect");
-        isConnecting = false;
-        updateConnectionStatus("Disconnected");
-        return NULL;
-    }
-    
-    if (!networkManager->connectToServer(ip, port)) {
-        logMsg("Connection failed");
-        isConnecting = false;
-        updateConnectionStatus("Disconnected");
-        notifyConnectionFailed("Failed to connect to Calibre server.\nPlease check IP address and port.");
-        return NULL;
-    }
-    
-    if (shouldStop) {
-        logMsg("Connection cancelled after connect");
-        networkManager->disconnect();
-        isConnecting = false;
-        updateConnectionStatus("Disconnected");
-        return NULL;
-    }
-    
-    logMsg("Connected, starting handshake");
-    updateConnectionStatus("Handshake...");
-    
-    if (!protocol->performHandshake(password)) {
-        logMsg("Handshake failed: %s", protocol->getErrorMessage().c_str());
-        networkManager->disconnect();
-        isConnecting = false;
-        updateConnectionStatus("Disconnected");
-        
-        std::string errorMsg = "Handshake failed: ";
-        errorMsg += protocol->getErrorMessage();
-        notifyConnectionFailed(errorMsg.c_str());
-        return NULL;
-    }
-    
-    logMsg("Handshake successful");
-    updateConnectionStatus("Connected");
-    
-    protocol->handleMessages([](const std::string& status) {
-        // Callback from protocol
-    });
-    
-    logMsg("Disconnecting");
-    
-    int booksReceived = protocol->getBooksReceivedCount();
-    
-    protocol->disconnect();
-    networkManager->disconnect();
-    
-    updateConnectionStatus("Disconnected");
-    isConnecting = false;
-    
-    if (booksReceived > 0) {
-        notifySyncComplete(booksReceived);
-    }
-    
-    return NULL;
-}
-
-// Start actual connection to Calibre (called after WiFi is ready)
-void startConnectionAfterWifi() {
-    if (isConnecting) return;
-    
-    logMsg("startConnectionAfterWifi called");
-    
-    isConnecting = true;
-    shouldStop = false;
-    
-    if (!networkManager) networkManager = new NetworkManager();
-    if (!bookManager) {
-        bookManager = new BookManager();
-        bookManager->initialize("");
-    }
-    
-    if (!protocol) {
-        const char* readCol = ReadString(appConfig, KEY_READ_COLUMN, DEFAULT_READ_COLUMN);
-        const char* readDateCol = ReadString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
-        const char* favCol = ReadString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
-        
-        protocol = new CalibreProtocol(networkManager, bookManager, 
-                                      readCol ? readCol : "", 
-                                      readDateCol ? readDateCol : "", 
-                                      favCol ? favCol : "");
-    }
-    
-    if (pthread_create(&connectionThread, NULL, connectionThreadFunc, NULL) != 0) {
-        logMsg("Failed to create connection thread");
-        updateConnectionStatus("Disconnected");
-        isConnecting = false;
-        return;
-    }
-}
-
-void startConnection() {
-    if (isConnecting || wifiEnabling) {
-        logMsg("Connection or WiFi enable already in progress");
-        return;
-    }
-    
-    logMsg("startConnection called");
-    
-    // Check if WiFi is already connected
-    if (isWiFiConnected()) {
-        logMsg("WiFi already connected, starting Calibre connection");
-        startConnectionAfterWifi();
-        return;
-    }
-    
-    // Need to enable WiFi first
-    logMsg("WiFi not connected, starting WiFi enable");
-    startWifiEnable();
-}
-
-void stopConnection() {
-    logMsg("Stopping connection...");
-    shouldStop = true;
-    
-    if (protocol) protocol->disconnect();
-    if (networkManager) networkManager->disconnect();
-
-    if (isConnecting) {
-        logMsg("Connection thread is running, detaching for fast exit");
-        pthread_detach(connectionThread);
-        isConnecting = false;
-    }
-    
-    snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "Disconnected");
-}
-
-// Config functions
-void initConfig() {
-    iv_buildpath("/mnt/ext1/system/config");
-    appConfig = OpenConfig(CONFIG_FILE, configItems);
-    
-    if (!appConfig) {
-        appConfig = OpenConfig(CONFIG_FILE, NULL);
-        if (appConfig) {
-            WriteString(appConfig, KEY_IP, DEFAULT_IP);
-            WriteString(appConfig, KEY_PORT, DEFAULT_PORT);
-            WriteString(appConfig, KEY_PASSWORD, DEFAULT_PASSWORD);
-            WriteString(appConfig, KEY_READ_COLUMN, DEFAULT_READ_COLUMN);
-            WriteString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
-            WriteString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
-            WriteString(appConfig, KEY_CONNECTION, "Disconnected");
-            SaveConfig(appConfig);
-        }
-    }
-
-    if (appConfig) {
-        snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "Disconnected");
-        WriteString(appConfig, KEY_CONNECTION, "Disconnected");
-    }
-}
-
-void saveAndCloseConfig() {
-    if (appConfig) {
-        WriteString(appConfig, KEY_CONNECTION, "Disconnected");
-        SaveConfig(appConfig);
-        CloseConfig(appConfig);
-        appConfig = NULL;
-    }
-}
-
-void configSaveHandler() {
-    logMsg("Config save handler called");
-    if (appConfig) SaveConfig(appConfig);
-}
-
-void configItemChangedHandler(char *name) {
-    logMsg("Config item changed: %s", name ? name : "NULL");
-    if (appConfig) SaveConfig(appConfig);
-}
-
-void retryConnectionHandler(int button) {
-    logMsg("Retry dialog closed with button: %d", button);
-    
-    if (button == 1) {
-        logMsg("User chose to retry connection");
-        startConnection();
-    } else {
-        logMsg("User cancelled retry");
-    }
-}
-
-void wifiFailedHandler(int button) {
-    logMsg("WiFi failed dialog closed with button: %d", button);
-    
-    if (button == 1) {
-        logMsg("User chose to retry WiFi");
-        wifiRetryCount = 0;
-        startConnection();
-    } else {
-        logMsg("User cancelled WiFi retry");
-        updateConnectionStatus("Disconnected");
-    }
-}
-
-void configCloseHandler() {
-    logMsg("Config editor closed by user");
-    performExit();
-}
-
-void showMainScreen() {
-    ClearScreen();
-    OpenConfigEditor(
-        (char *)"Connect to Calibre",
-        appConfig,
-        configItems,
-        configCloseHandler,
-        configItemChangedHandler
-    );
-}
-
-void performExit() {
-    if (exitRequested) {
-        logMsg("Exit already in progress, ignoring");
-        return;
-    }
-    
-    exitRequested = true;
-    logMsg("Performing exit");
-    
-    stopConnection();
-    
-    logMsg("Closing config editor...");
-    CloseConfigLevel();
-    
-    saveAndCloseConfig();
-    
-    if (protocol) {
-        delete protocol;
-        protocol = NULL;
-    }
-    if (networkManager) {
-        delete networkManager;
-        networkManager = NULL;
-    }
-    if (bookManager) {
-        delete bookManager;
-        bookManager = NULL;
-    }
-    
-    logMsg("Closing application normally");
-    closeLog();
-    
-    CloseApp();
-}
-
-int mainEventHandler(int type, int par1, int par2) {
-    if (type != EVT_POINTERMOVE && type != 49) {
-        logMsg("Event: %d, p1: %d, p2: %d", type, par1, par2);
-    }
-
     switch (type) {
         case EVT_INIT:
-            initLog();
-            logMsg("EVT_INIT");
-            SetPanelType(PANEL_ENABLED);
-            initConfig();
-            showMainScreen();
-            startConnection();
-            break;
+            logMessage("EVT_INIT");
+            initializeApp();
+            drawMainScreen();
             
-        case EVT_USER_UPDATE:
-            PartialUpdate(0, 0, ScreenWidth(), ScreenHeight());
-            break;
-            
-        case EVT_WIFI_READY:
-            logMsg("WiFi ready, starting Calibre connection");
-            wifiRetryCount = 0;
-            startConnectionAfterWifi();
-            break;
-            
-        case EVT_WIFI_FAILED:
-            logMsg("WiFi failed event received, error code: %d", par1);
-            updateConnectionStatus("WiFi not connected");
-            // Auto-retry silently a few times
-            if (wifiRetryCount < 3) {
-                wifiRetryCount++;
-                logMsg("Auto-retrying WiFi connection (attempt %d)", wifiRetryCount);
-                SetHardTimer("wifi_retry", wifiRetryTimerProc, 3000);
-            } else {
-                wifiRetryCount = 0;
-                Dialog(ICON_WARNING, 
-                       "WiFi Required", 
-                       "Could not connect to WiFi.\nPlease check WiFi settings.",
-                       "Retry", "Cancel", 
-                       wifiFailedHandler);
+            if (g_config.autoConnect && strlen(g_config.serverIp) > 0) {
+                startConnection();
             }
-            break;
-            
-        case EVT_CONNECTION_FAILED:
-            logMsg("Showing connection failed dialog");
-            Dialog(ICON_ERROR, 
-                   "Connection Failed", 
-                   connectionErrorBuffer,
-                   "Retry", "Cancel", 
-                   retryConnectionHandler);
             break;
             
         case EVT_SHOW:
-            SoftUpdate();
+            drawMainScreen();
+            FullUpdate();
             break;
             
         case EVT_KEYPRESS:
-            if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV) {
-                logMsg("Hardware KEY_BACK pressed - Exiting");
-                performExit();
-                return 1;
+            switch (par1) {
+                case IV_KEY_OK:
+                    if (g_state.connected) {
+                        stopConnection();
+                    } else {
+                        startConnection();
+                    }
+                    break;
+                    
+                case IV_KEY_MENU:
+                    openConfigEditor();
+                    break;
+                    
+                case IV_KEY_BACK:
+                case IV_KEY_HOME:
+                    logMessage("Exit key pressed");
+                    CloseApp();
+                    break;
             }
             break;
-
-        case EVT_EXIT:
-            logMsg("EVT_EXIT received");
-            if (!exitRequested) {
-                exitRequested = true;
-                stopConnection();
-                saveAndCloseConfig();
-                
-                if (protocol) {
-                    delete protocol;
-                    protocol = NULL;
+            
+        case EVT_NET_CONNECTED:
+            logMessage("WiFi connected event received");
+            updateStatus("WiFi connected");
+            
+            // Clear retry counter on successful connection
+            g_state.retryCount = 0;
+            
+            // Clear any pending timers
+            ClearTimer(wifiRetryTimer);
+            ClearTimer(wifiTimeoutTimer);
+            
+            // Start Calibre connection
+            if (!g_state.connectionThread) {
+                pthread_t thread;
+                if (pthread_create(&thread, NULL, calibreConnectThread, NULL) == 0) {
+                    g_state.connectionThread = thread;
+                    pthread_detach(thread);
+                    logMessage("Started Calibre connection thread");
+                } else {
+                    logMessage("Failed to create Calibre connection thread");
+                    updateStatus("Connection error");
                 }
-                if (networkManager) {
-                    delete networkManager;
-                    networkManager = NULL;
-                }
-                if (bookManager) {
-                    delete bookManager;
-                    bookManager = NULL;
-                }
-                
-                closeLog();
             }
-            return 1;
+            break;
+            
+        case EVT_NET_DISCONNECTED:
+            logMessage("WiFi disconnected event received");
+            
+            // Stop any active connection
+            if (g_state.socketFd > 0) {
+                close(g_state.socketFd);
+                g_state.socketFd = -1;
+            }
+            
+            updateStatus("WiFi disconnected");
+            
+            // Auto-retry if not manually stopped
+            if (g_state.retryCount < MAX_RETRY_COUNT) {
+                g_state.retryCount++;
+                logMessage("Auto-retrying WiFi connection (attempt %d)", g_state.retryCount);
+                SetWeakTimer("WIFI_RETRY", wifiRetryTimer, WIFI_RETRY_DELAY);
+            } else {
+                updateStatus("WiFi connection failed");
+            }
+            break;
+            
+        case EVT_CONFIGCHANGED:
+            logMessage("Config changed");
+            loadConfig();
+            drawMainScreen();
+            FullUpdate();
+            break;
+            
+        case EVT_EXIT:
+            logMessage("EVT_EXIT received");
+            cleanupApp();
+            break;
+            
+        default:
+            break;
     }
     
     return 0;
 }
 
-int main(int argc, char *argv[]) {
-    InkViewMain(mainEventHandler);
-    logMsg("After InkViewMain - this should not happen");
+static void initializeApp(void) {
+    logMessage("Initializing application");
+    
+    // Create cache directory
+    iv_mkdir(CACHE_DIR, 0755);
+    
+    // Load configuration
+    loadConfig();
+    
+    updateStatus("Ready");
+    logMessage("Application initialized");
+}
+
+static void cleanupApp(void) {
+    logMessage("Cleaning up application");
+    
+    // Stop connection if active
+    if (g_state.connected) {
+        stopConnection();
+    }
+    
+    // Close config
+    if (g_state.config) {
+        CloseConfig(g_state.config);
+        g_state.config = NULL;
+    }
+    
+    // Close log
+    if (g_logFile) {
+        time_t now = time(NULL);
+        fprintf(g_logFile, "=== Calibre Connect Closed [%s] ===\n", ctime(&now));
+        fclose(g_logFile);
+        g_logFile = NULL;
+    }
+    
+    logMessage("Cleanup complete");
+}
+
+int main(void) {
+    InkViewMain(mainHandler);
     return 0;
 }
