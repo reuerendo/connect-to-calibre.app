@@ -347,27 +347,29 @@ void startConnection() {
     
     // Check current network status
     int netStatus = QueryNetwork();
-    logMsg("QueryNetwork() = 0x%X (WIFIREADY=0x%X, CONNECTED=0x%X)", 
-           netStatus, NET_WIFIREADY, NET_CONNECTED);
+    logMsg("QueryNetwork() = 0x%X (NET_WIFI=0x%X, WIFIREADY=0x%X, CONNECTED=0x%X)", 
+           netStatus, NET_WIFI, NET_WIFIREADY, NET_CONNECTED);
     
     // Check if already connected to WiFi
-    iv_netinfo* netInfo = NetInfo();
-    if (netInfo && (netStatus & NET_CONNECTED)) {
-        logMsg("WiFi already connected to: %s", netInfo->name);
-        startCalibreConnection();
+    if (netStatus & NET_CONNECTED) {
+        iv_netinfo* netInfo = NetInfo();
+        if (netInfo && netInfo->connected) {
+            logMsg("WiFi already connected to: %s", netInfo->name);
+            startCalibreConnection();
+            return;
+        }
+    }
+    
+    // Check if WiFi module is available
+    if (!(netStatus & NET_WIFI)) {
+        logMsg("WiFi module not available");
+        updateConnectionStatus("WiFi not available");
+        notifyConnectionFailed("WiFi module not available on this device.");
         return;
     }
     
-    // Check if WiFi hardware is off
-    if (!(netStatus & NET_WIFIREADY)) {
-        logMsg("WiFi hardware is off, need to enable it");
-        updateConnectionStatus("WiFi is off");
-        notifyConnectionFailed("Please enable WiFi in device settings\nand try again.");
-        return;
-    }
-    
-    // WiFi is on but not connected - try to connect
-    logMsg("WiFi hardware ready but not connected, attempting connection");
+    // WiFi module exists, try to connect
+    logMsg("WiFi module available, attempting connection");
     updateConnectionStatus("Connecting to WiFi...");
     
     // Use synchronous NetConnect with showHourglass=1 to show system WiFi dialog
