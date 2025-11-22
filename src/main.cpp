@@ -108,7 +108,6 @@ static iconfigedit configItems[] = {
         (char*)KEY_CONNECTION,
         (char*)"Disconnected",  // Will be updated dynamically
         NULL,
-        NULL,
         NULL
     },
     {
