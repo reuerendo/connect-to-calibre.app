@@ -186,11 +186,9 @@ void updateConnectionStatus(const char* status) {
     logMsg("Status update: %s", status);
     snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "%s", status);
     
-    // Update config value to trigger redraw
+    // Update config value
     if (appConfig) {
         WriteString(appConfig, KEY_CONNECTION, status);
-        // Force redraw of config editor
-        RepaintConfigItems();
     }
     
     SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
@@ -484,6 +482,7 @@ void showMainScreen() {
         configCloseHandler,
         configItemChangedHandler
     );
+    FullUpdate();
 }
 
 void performExit() {
@@ -536,10 +535,13 @@ int mainEventHandler(int type, int par1, int par2) {
             startConnection();
             break;
             
-        case EVT_USER_UPDATE:
-            // Force full update to show new status
-            FullUpdate();
+        case EVT_USER_UPDATE: {
+            // Reopen config editor to refresh the display
+            logMsg("Refreshing config editor");
+            CloseConfigLevel();
+            showMainScreen();
             break;
+        }
             
         case EVT_CONNECTION_FAILED:
             logMsg("Showing connection failed dialog");
