@@ -205,6 +205,32 @@ bool isWiFiHardwareReady() {
     return (netStatus & NET_WIFIREADY) != 0;
 }
 
+// Try to find and connect to a known WiFi network
+bool tryConnectToKnownNetwork() {
+    logMsg("Trying to connect to known network");
+    
+    // Get list of known/configured networks
+    char** networks = EnumConnections();
+    if (!networks || !networks[0]) {
+        logMsg("No configured networks found");
+        return false;
+    }
+    
+    // Log available configured networks
+    for (int i = 0; networks[i]; i++) {
+        logMsg("Configured network[%d]: %s", i, networks[i]);
+    }
+    
+    // Try to connect to the first configured network
+    const char* networkName = networks[0];
+    logMsg("Attempting to connect to: %s", networkName);
+    
+    int result = NetConnectSilent(networkName);
+    logMsg("NetConnectSilent(%s) result: %d", networkName, result);
+    
+    return (result == NET_OK || result == NET_CONNECT);
+}
+
 // WiFi enable thread function - silent connection without dialogs
 void* wifiEnableThreadFunc(void* arg) {
     logMsg("WiFi enable thread started");
@@ -226,9 +252,9 @@ void* wifiEnableThreadFunc(void* arg) {
     
     if (nmStatus <= 0) {
         logMsg("Starting NetMgr service");
-        int result = NetMgr(1); // Start network manager
+        int result = NetMgr(1);
         logMsg("NetMgr(1) result: %d", result);
-        usleep(500000); // Wait 500ms for service to start
+        usleep(500000);
     }
     
     if (shouldStop || exitRequested) {
@@ -242,14 +268,18 @@ void* wifiEnableThreadFunc(void* arg) {
     logMsg("WiFiPower(1) result: %d", result);
     
     // Wait for hardware to initialize
-    usleep(1500000); // 1.5 seconds
+    usleep(2000000); // 2 seconds
     
     if (shouldStop || exitRequested) {
         wifiEnabling = false;
         return NULL;
     }
     
-    // Check if connected after power on (auto-connect to known network)
+    // Check hardware status
+    int netStatus = QueryNetwork();
+    logMsg("QueryNetwork after WiFiPower: 0x%X", netStatus);
+    
+    // Check if connected after power on
     if (isWiFiConnected()) {
         logMsg("WiFi connected after power on");
         wifiEnabling = false;
@@ -259,13 +289,44 @@ void* wifiEnableThreadFunc(void* arg) {
     
     updateConnectionStatus("Connecting to WiFi...");
     
-    // Step 3: Try silent connect using NetConnectSilent
-    logMsg("Calling NetConnectSilent(NULL)");
-    result = NetConnectSilent(NULL);
-    logMsg("NetConnectSilent result: %d", result);
+    // Step 3: Try to connect to known network
+    bool connectStarted = tryConnectToKnownNetwork();
+    
+    if (!connectStarted) {
+        // If no known networks, try scanning and auto-connect
+        logMsg("No known networks, starting WiFi scan");
+        
+        result = WiFiScanProcessStart();
+        logMsg("WiFiScanProcessStart result: %d", result);
+        
+        if (result == 0) {
+            usleep(3000000); // Wait 3 seconds for scan
+            
+            iv_wifi_ap_list* apList = WiFiScanProcessGetResults();
+            if (apList && apList->ap_quantity > 0) {
+                logMsg("Found %d access points", apList->ap_quantity);
+                for (int i = 0; i < apList->ap_quantity && i < 5; i++) {
+                    logMsg("AP[%d]: %s (quality=%d)", i, 
+                           apList->apinfo[i].ssid, 
+                           apList->apinfo[i].quality);
+                }
+            } else {
+                logMsg("No access points found");
+            }
+            
+            WiFiScanProcessStop();
+            
+            if (apList) {
+                free(apList);
+            }
+        }
+        
+        // Try connecting again after scan
+        tryConnectToKnownNetwork();
+    }
     
     // Wait for connection with timeout
-    const int maxWaitSeconds = 20;
+    const int maxWaitSeconds = 15;
     const int checkIntervalMs = 500;
     int waitedMs = 0;
     
@@ -276,11 +337,17 @@ void* wifiEnableThreadFunc(void* arg) {
             return NULL;
         }
         
-        if (isWiFiConnected()) {
+        // Check connection status
+        NET_STATE state = GetNetState();
+        if (state == CONNECTED) {
             logMsg("WiFi connected after %d ms", waitedMs);
             wifiEnabling = false;
             SendEvent(mainEventHandler, EVT_WIFI_READY, 0, 0);
             return NULL;
+        }
+        
+        if (state == CONNECTING) {
+            logMsg("WiFi connecting... (%d ms)", waitedMs);
         }
         
         usleep(checkIntervalMs * 1000);
