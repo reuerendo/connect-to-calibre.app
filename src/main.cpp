@@ -549,4 +549,3 @@ int main(int argc, char *argv[]) {
     InkViewMain(mainEventHandler);
     return 0;
 }
-}
