@@ -8,10 +8,14 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 
+extern "C" {
 #include "inkview.h"
+}
 
 // Application constants
 #define APP_NAME "Calibre Connect"
@@ -56,15 +60,15 @@ typedef struct {
 } AppState;
 
 static AppState g_state = {
-    .socketFd = -1,
-    .connected = 0,
-    .wifiConnected = 0,
-    .connectionThread = 0,
-    .wifiEnableThread = 0,
-    .statusMessage = "Initializing...",
-    .config = NULL,
-    .retryCount = 0,
-    .exitRequested = 0
+    -1,     // socketFd
+    0,      // connected
+    0,      // wifiConnected
+    0,      // connectionThread
+    0,      // wifiEnableThread
+    "Initializing...", // statusMessage
+    NULL,   // config
+    0,      // retryCount
+    0       // exitRequested
 };
 
 // Configuration structure
@@ -76,10 +80,10 @@ typedef struct {
 } Config;
 
 static Config g_config = {
-    .serverIp = "",
-    .serverPort = DEFAULT_PORT,
-    .deviceName = "PocketBook",
-    .autoConnect = 1
+    "",             // serverIp
+    DEFAULT_PORT,   // serverPort
+    "PocketBook",   // deviceName
+    1               // autoConnect
 };
 
 // Function declarations
@@ -93,6 +97,10 @@ static void stopConnection(void);
 static int mainHandler(int type, int par1, int par2);
 static void openConfigEditor(void);
 static void drawMainScreen(void);
+static void wifiTimeoutTimer(void);
+static void wifiRetryTimer(void);
+static void* wifiEnableThread(void* arg);
+static void* calibreConnectThread(void* arg);
 
 // Logging
 static FILE* g_logFile = NULL;
@@ -283,7 +291,7 @@ static int receiveMessage(int* opcode, char* jsonData, int maxLen) {
     int pos = 0;
     
     // Read length prefix
-    while (pos < sizeof(lenBuf) - 1) {
+    while (pos < (int)(sizeof(lenBuf) - 1)) {
         char c;
         int n = recv(g_state.socketFd, &c, 1, 0);
         if (n <= 0) {
@@ -435,11 +443,11 @@ static void* calibreConnectThread(void* arg) {
             case OP_FREE_SPACE:
             case OP_TOTAL_SPACE:
                 {
-                    struct statfs stat;
-                    if (statfs(FLASHDIR, &stat) == 0) {
+                    struct statfs statInfo;
+                    if (statfs(FLASHDIR, &statInfo) == 0) {
                         long long space = (opcode == OP_FREE_SPACE) ?
-                            (long long)stat.f_bavail * stat.f_bsize :
-                            (long long)stat.f_blocks * stat.f_bsize;
+                            (long long)statInfo.f_bavail * statInfo.f_bsize :
+                            (long long)statInfo.f_blocks * statInfo.f_bsize;
                         
                         char spaceJson[128];
                         snprintf(spaceJson, sizeof(spaceJson),
@@ -611,12 +619,18 @@ static void wifiRetryTimer(void) {
 }
 
 // Configuration editor
+static const char* yesNoOptions[] = {"No", "Yes", NULL};
+
 static iconfigedit configItems[] = {
-    {CFG_TEXT, NULL, "Server IP", "IP address of Calibre server", "server_ip", "", NULL, NULL, NULL},
-    {CFG_NUMBER, NULL, "Server Port", "Port number", "server_port", "9090", NULL, NULL, NULL},
-    {CFG_TEXT, NULL, "Device Name", "Name shown in Calibre", "device_name", "PocketBook", NULL, NULL, NULL},
-    {CFG_INDEX, NULL, "Auto Connect", "Connect on startup", "auto_connect", "1", 
-     (char*[]){"No", "Yes", NULL}, NULL, NULL},
+    {CFG_TEXT, NULL, const_cast<char*>("Server IP"), const_cast<char*>("IP address of Calibre server"), 
+     const_cast<char*>("server_ip"), const_cast<char*>(""), NULL, NULL, NULL},
+    {CFG_NUMBER, NULL, const_cast<char*>("Server Port"), const_cast<char*>("Port number"), 
+     const_cast<char*>("server_port"), const_cast<char*>("9090"), NULL, NULL, NULL},
+    {CFG_TEXT, NULL, const_cast<char*>("Device Name"), const_cast<char*>("Name shown in Calibre"), 
+     const_cast<char*>("device_name"), const_cast<char*>("PocketBook"), NULL, NULL, NULL},
+    {CFG_INDEX, NULL, const_cast<char*>("Auto Connect"), const_cast<char*>("Connect on startup"), 
+     const_cast<char*>("auto_connect"), const_cast<char*>("1"), 
+     const_cast<char**>(yesNoOptions), NULL, NULL},
     {0}
 };
 
