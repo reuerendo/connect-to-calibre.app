@@ -91,6 +91,7 @@ static pthread_t connectionThread;
 static bool isConnecting = false;
 static bool shouldStop = false;
 static volatile bool exitRequested = false;
+static bool configEditorOpen = false;
 
 // Forward declarations
 int mainEventHandler(int type, int par1, int par2);
@@ -105,7 +106,7 @@ static iconfigedit configItems[] = {
         (char*)"Connection",
         NULL,
         (char*)KEY_CONNECTION,
-        NULL,  // Will be set dynamically
+        (char*)"Disconnected",  // Will be updated dynamically
         NULL,
         NULL,
         NULL
@@ -189,9 +190,16 @@ void updateConnectionStatus(const char* status) {
     // Update config value
     if (appConfig) {
         WriteString(appConfig, KEY_CONNECTION, status);
+        SaveConfig(appConfig);
     }
     
-    SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+    // Update config editor display value
+    configItems[0].deflt = connectionStatusBuffer;
+    
+    // Force config page refresh if editor is open
+    if (configEditorOpen) {
+        UpdateCurrentConfigPage();
+    }
 }
 
 void notifyConnectionFailed(const char* errorMsg) {
@@ -311,7 +319,7 @@ void* connectionThreadFunc(void* arg) {
     updateConnectionStatus("Connected");
     
     protocol->handleMessages([](const std::string& status) {
-        // Callback from protocol
+        // Callback from protocol - could update status here if needed
     });
     
     logMsg("Disconnecting");
@@ -411,7 +419,7 @@ void stopConnection() {
         isConnecting = false;
     }
     
-    snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "Disconnected");
+    updateConnectionStatus("Disconnected");
 }
 
 void initConfig() {
@@ -433,8 +441,17 @@ void initConfig() {
     }
 
     if (appConfig) {
+        // Read saved status or set to disconnected
+        const char* savedStatus = ReadString(appConfig, KEY_CONNECTION, "Disconnected");
+        snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "%s", savedStatus);
+        
+        // Always reset to disconnected on app start
         snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "Disconnected");
         WriteString(appConfig, KEY_CONNECTION, "Disconnected");
+        SaveConfig(appConfig);
+        
+        // Update config items with current status
+        configItems[0].deflt = connectionStatusBuffer;
     }
 }
 
@@ -475,6 +492,7 @@ void configCloseHandler() {
 
 void showMainScreen() {
     ClearScreen();
+    configEditorOpen = true;
     OpenConfigEditor(
         (char *)"Connect to Calibre",
         appConfig,
@@ -482,6 +500,7 @@ void showMainScreen() {
         configCloseHandler,
         configItemChangedHandler
     );
+    // Only one update at initialization
     FullUpdate();
 }
 
@@ -497,6 +516,7 @@ void performExit() {
     stopConnection();
     
     logMsg("Closing config editor...");
+    configEditorOpen = false;
     CloseConfigLevel();
     
     saveAndCloseConfig();
@@ -536,9 +556,11 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
             
         case EVT_USER_UPDATE:
-            // Simple screen update without reopening config
-            logMsg("Updating screen");
-            FullUpdate();
+            // Minimal update without full screen redraw
+            logMsg("Updating config display");
+            if (configEditorOpen) {
+                UpdateCurrentConfigPage();
+            }
             break;
             
         case EVT_CONNECTION_FAILED:
