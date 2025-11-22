@@ -98,6 +98,7 @@ static volatile bool exitRequested = false;
 int mainEventHandler(int type, int par1, int par2);
 void performExit();
 void startConnection();
+void delayedConnectionStart();
 
 // Config editor structure
 static iconfigedit configItems[] = {
@@ -191,8 +192,6 @@ void updateConnectionStatus(const char* status) {
     if (appConfig) {
         WriteString(appConfig, KEY_CONNECTION, status);
     }
-    
-    SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
 }
 
 void notifyConnectionFailed(const char* errorMsg) {
@@ -216,6 +215,7 @@ void* connectionThreadFunc(void* arg) {
     isConnecting = true;
     
     updateConnectionStatus("Connecting...");
+    SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
     
     const char* ip = ReadString(appConfig, KEY_IP, DEFAULT_IP);
     int port = ReadInt(appConfig, KEY_PORT, atoi(DEFAULT_PORT));
@@ -224,79 +224,7 @@ void* connectionThreadFunc(void* arg) {
     std::string password;
     
     if (encryptedPassword && strlen(encryptedPassword) > 0) {
-        if (encryptedPassword[0] == '$') {
-            const char* decrypted = ReadSecret(appConfig, KEY_PASSWORD, "");
-            if (decrypted) password = decrypted;
-        } else {
-            password = encryptedPassword;
-        }
-    } else {
-        password = "";
-    }
-    
-    logMsg("Connecting to %s:%d", ip, port);
-    
-    if (shouldStop) {
-        logMsg("Connection cancelled before connect");
-        isConnecting = false;
-        updateConnectionStatus("Disconnected");
-        return NULL;
-    }
-    
-    if (!networkManager->connectToServer(ip, port)) {
-        logMsg("Connection failed");
-        isConnecting = false;
-        updateConnectionStatus("Disconnected");
-        notifyConnectionFailed("Failed to connect to Calibre server.\nPlease check IP address and port.");
-        return NULL;
-    }
-    
-    if (shouldStop) {
-        logMsg("Connection cancelled after connect");
-        networkManager->disconnect();
-        isConnecting = false;
-        updateConnectionStatus("Disconnected");
-        return NULL;
-    }
-    
-    logMsg("Connected, starting handshake");
-    updateConnectionStatus("Handshake...");
-    
-    if (!protocol->performHandshake(password)) {
-        logMsg("Handshake failed: %s", protocol->getErrorMessage().c_str());
-        networkManager->disconnect();
-        isConnecting = false;
-        updateConnectionStatus("Disconnected");
-        
-        std::string errorMsg = "Handshake failed: ";
-        errorMsg += protocol->getErrorMessage();
-        notifyConnectionFailed(errorMsg.c_str());
-        return NULL;
-    }
-    
-    logMsg("Handshake successful");
-    updateConnectionStatus("Connected");
-    
-    protocol->handleMessages([](const std::string& status) {
-        // Callback from protocol
-    });
-    
-    logMsg("Disconnecting");
-    
-    int booksReceived = protocol->getBooksReceivedCount();
-    
-    protocol->disconnect();
-    networkManager->disconnect();
-    
-    updateConnectionStatus("Disconnected");
-    isConnecting = false;
-    
-    if (booksReceived > 0) {
-        notifySyncComplete(booksReceived);
-    }
-    
-    return NULL;
-}
+        if (encryptedPassword[0] == '
 
 void startCalibreConnection() {
     if (isConnecting) {
@@ -335,6 +263,10 @@ void startCalibreConnection() {
         isConnecting = false;
         return;
     }
+}
+
+void delayedConnectionStart() {
+    startConnection();
 }
 
 void startConnection() {
@@ -494,6 +426,9 @@ void performExit() {
     exitRequested = true;
     logMsg("Performing exit");
     
+    // Clear timer if still pending
+    ClearTimerByName("connect_timer");
+    
     stopConnection();
     
     logMsg("Closing config editor...");
@@ -540,7 +475,405 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
             
         case EVT_USER_UPDATE:
-            PartialUpdate(0, 0, ScreenWidth(), ScreenHeight());
+            logMsg("EVT_USER_UPDATE - refreshing config editor");
+            UpdateCurrentConfigPage();
+            break;
+            
+        case EVT_CONNECTION_FAILED:
+            logMsg("Showing connection failed dialog");
+            Dialog(ICON_ERROR, 
+                   "Connection Failed", 
+                   connectionErrorBuffer,
+                   "Retry", "Cancel", 
+                   retryConnectionHandler);
+            break;
+            
+        case EVT_SYNC_COMPLETE:
+            logMsg("Showing sync complete message");
+            Message(ICON_INFORMATION, "Success", syncCompleteBuffer, 3000);
+            break;
+            
+        case EVT_SHOW:
+            SoftUpdate();
+            break;
+            
+        case EVT_KEYPRESS:
+            if (par1 == IV_KEY_BACK || par1 == IV_KEY_PREV) {
+                logMsg("Hardware KEY_BACK pressed - Exiting");
+                performExit();
+                return 1;
+            }
+            break;
+
+        case EVT_EXIT:
+            logMsg("EVT_EXIT received");
+            if (!exitRequested) {
+                exitRequested = true;
+                stopConnection();
+                saveAndCloseConfig();
+                
+                if (protocol) {
+                    delete protocol;
+                    protocol = NULL;
+                }
+                if (cacheManager) {
+                    delete cacheManager;
+                    cacheManager = NULL;
+                }
+                if (networkManager) {
+                    delete networkManager;
+                    networkManager = NULL;
+                }
+                if (bookManager) {
+                    delete bookManager;
+                    bookManager = NULL;
+                }
+                
+                closeLog();
+            }
+            return 1;
+    }
+    
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    InkViewMain(mainEventHandler);
+    logMsg("After InkViewMain - this should not happen");
+    return 0;
+}
+) {
+            const char* decrypted = ReadSecret(appConfig, KEY_PASSWORD, "");
+            if (decrypted) password = decrypted;
+        } else {
+            password = encryptedPassword;
+        }
+    } else {
+        password = "";
+    }
+    
+    logMsg("Connecting to %s:%d", ip, port);
+    
+    if (shouldStop) {
+        logMsg("Connection cancelled before connect");
+        isConnecting = false;
+        updateConnectionStatus("Disconnected");
+        SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+        return NULL;
+    }
+    
+    if (!networkManager->connectToServer(ip, port)) {
+        logMsg("Connection failed");
+        isConnecting = false;
+        updateConnectionStatus("Disconnected");
+        SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+        notifyConnectionFailed("Failed to connect to Calibre server.\nPlease check IP address and port.");
+        return NULL;
+    }
+    
+    if (shouldStop) {
+        logMsg("Connection cancelled after connect");
+        networkManager->disconnect();
+        isConnecting = false;
+        updateConnectionStatus("Disconnected");
+        SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+        return NULL;
+    }
+    
+    logMsg("Connected, starting handshake");
+    updateConnectionStatus("Handshake...");
+    SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+    
+    if (!protocol->performHandshake(password)) {
+        logMsg("Handshake failed: %s", protocol->getErrorMessage().c_str());
+        networkManager->disconnect();
+        isConnecting = false;
+        updateConnectionStatus("Disconnected");
+        SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+        
+        std::string errorMsg = "Handshake failed: ";
+        errorMsg += protocol->getErrorMessage();
+        notifyConnectionFailed(errorMsg.c_str());
+        return NULL;
+    }
+    
+    logMsg("Handshake successful");
+    updateConnectionStatus("Connected");
+    SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+    
+    protocol->handleMessages([](const std::string& status) {
+        // Callback from protocol
+    });
+    
+    logMsg("Disconnecting");
+    
+    int booksReceived = protocol->getBooksReceivedCount();
+    
+    protocol->disconnect();
+    networkManager->disconnect();
+    
+    updateConnectionStatus("Disconnected");
+    SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
+    isConnecting = false;
+    
+    if (booksReceived > 0) {
+        notifySyncComplete(booksReceived);
+    }
+    
+    return NULL;
+}
+
+void startCalibreConnection() {
+    if (isConnecting) {
+        logMsg("Connection already in progress");
+        return;
+    }
+    
+    logMsg("Starting Calibre connection thread");
+    
+    isConnecting = true;
+    shouldStop = false;
+    
+    if (!networkManager) networkManager = new NetworkManager();
+    if (!bookManager) {
+        bookManager = new BookManager();
+        bookManager->initialize("");
+    }
+    if (!cacheManager) {
+        cacheManager = new CacheManager();
+    }
+    
+    if (!protocol) {
+        const char* readCol = ReadString(appConfig, KEY_READ_COLUMN, DEFAULT_READ_COLUMN);
+        const char* readDateCol = ReadString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
+        const char* favCol = ReadString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
+        
+        protocol = new CalibreProtocol(networkManager, bookManager, cacheManager,
+                                      readCol ? readCol : "", 
+                                      readDateCol ? readDateCol : "", 
+                                      favCol ? favCol : "");
+    }
+    
+    if (pthread_create(&connectionThread, NULL, connectionThreadFunc, NULL) != 0) {
+        logMsg("Failed to create connection thread");
+        updateConnectionStatus("Disconnected");
+        isConnecting = false;
+        return;
+    }
+}
+
+void delayedConnectionStart() {
+    startConnection();
+}
+
+void startConnection() {
+    if (isConnecting) {
+        logMsg("Connection already in progress");
+        return;
+    }
+    
+    logMsg("Starting connection sequence");
+    
+    // Check current network status
+    int netStatus = QueryNetwork();
+    logMsg("QueryNetwork() = 0x%X (NET_WIFI=0x%X, WIFIREADY=0x%X, CONNECTED=0x%X)", 
+           netStatus, NET_WIFI, NET_WIFIREADY, NET_CONNECTED);
+    
+    // Check if already connected to WiFi
+    if (netStatus & NET_CONNECTED) {
+        iv_netinfo* netInfo = NetInfo();
+        if (netInfo && netInfo->connected) {
+            logMsg("WiFi already connected to: %s", netInfo->name);
+            startCalibreConnection();
+            return;
+        }
+    }
+    
+    // Check if WiFi module is available
+    if (!(netStatus & NET_WIFI)) {
+        logMsg("WiFi module not available");
+        updateConnectionStatus("WiFi not available");
+        notifyConnectionFailed("WiFi module not available on this device.");
+        return;
+    }
+    
+    // WiFi module exists, try to connect
+    logMsg("WiFi module available, attempting connection");
+    updateConnectionStatus("Connecting to WiFi...");
+    
+    // Use synchronous NetConnect with showHourglass=1 to show system WiFi dialog
+    int result = NetConnect2(NULL, 1);
+    logMsg("NetConnect2 result: %d (NET_OK=%d)", result, NET_OK);
+    
+    if (result == NET_OK) {
+        logMsg("WiFi connected successfully");
+        startCalibreConnection();
+    } else {
+        logMsg("WiFi connection failed: %d", result);
+        updateConnectionStatus("WiFi failed");
+        
+        const char* errorMsg = NULL;
+        switch (result) {
+            case NET_FAIL:       errorMsg = "Network connection failed"; break;
+            case NET_ENOTCONF:   errorMsg = "No WiFi network configured.\nPlease configure WiFi in device settings."; break;
+            case NET_EWRONGKEY:  errorMsg = "Wrong WiFi password"; break;
+            case NET_EAUTH:      errorMsg = "WiFi authentication failed"; break;
+            case NET_ETIMEOUT:   errorMsg = "Connection timeout"; break;
+            case NET_EDISABLED:  errorMsg = "WiFi disabled"; break;
+            case NET_ABORTED:    errorMsg = "Connection cancelled by user"; break;
+            default:             errorMsg = "WiFi connection failed"; break;
+        }
+        
+        notifyConnectionFailed(errorMsg);
+    }
+}
+
+void stopConnection() {
+    logMsg("Stopping connection...");
+    shouldStop = true;
+    
+    if (protocol) protocol->disconnect();
+    if (networkManager) networkManager->disconnect();
+
+    if (isConnecting) {
+        logMsg("Connection thread is running, detaching for fast exit");
+        pthread_detach(connectionThread);
+        isConnecting = false;
+    }
+    
+    snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "Disconnected");
+}
+
+void initConfig() {
+    iv_buildpath("/mnt/ext1/system/config");
+    appConfig = OpenConfig(CONFIG_FILE, configItems);
+    
+    if (!appConfig) {
+        appConfig = OpenConfig(CONFIG_FILE, NULL);
+        if (appConfig) {
+            WriteString(appConfig, KEY_IP, DEFAULT_IP);
+            WriteString(appConfig, KEY_PORT, DEFAULT_PORT);
+            WriteString(appConfig, KEY_PASSWORD, DEFAULT_PASSWORD);
+            WriteString(appConfig, KEY_READ_COLUMN, DEFAULT_READ_COLUMN);
+            WriteString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
+            WriteString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
+            WriteString(appConfig, KEY_CONNECTION, "Disconnected");
+            SaveConfig(appConfig);
+        }
+    }
+
+    if (appConfig) {
+        snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "Disconnected");
+        WriteString(appConfig, KEY_CONNECTION, "Disconnected");
+    }
+}
+
+void saveAndCloseConfig() {
+    if (appConfig) {
+        WriteString(appConfig, KEY_CONNECTION, "Disconnected");
+        SaveConfig(appConfig);
+        CloseConfig(appConfig);
+        appConfig = NULL;
+    }
+}
+
+void configSaveHandler() {
+    logMsg("Config save handler called");
+    if (appConfig) SaveConfig(appConfig);
+}
+
+void configItemChangedHandler(char *name) {
+    logMsg("Config item changed: %s", name ? name : "NULL");
+    if (appConfig) SaveConfig(appConfig);
+}
+
+void retryConnectionHandler(int button) {
+    logMsg("Retry dialog closed with button: %d", button);
+    
+    if (button == 1) {
+        logMsg("User chose to retry connection");
+        startConnection();
+    } else {
+        logMsg("User cancelled retry");
+    }
+}
+
+void configCloseHandler() {
+    logMsg("Config editor closed by user");
+    performExit();
+}
+
+void showMainScreen() {
+    ClearScreen();
+    OpenConfigEditor(
+        (char *)"Connect to Calibre",
+        appConfig,
+        configItems,
+        configCloseHandler,
+        configItemChangedHandler
+    );
+}
+
+void performExit() {
+    if (exitRequested) {
+        logMsg("Exit already in progress, ignoring");
+        return;
+    }
+    
+    exitRequested = true;
+    logMsg("Performing exit");
+    
+    // Clear timer if still pending
+    ClearTimerByName("connect_timer");
+    
+    stopConnection();
+    
+    logMsg("Closing config editor...");
+    CloseConfigLevel();
+    
+    saveAndCloseConfig();
+    
+    if (protocol) {
+        delete protocol;
+        protocol = NULL;
+    }
+    if (cacheManager) {
+        delete cacheManager;
+        cacheManager = NULL;
+    }
+    if (networkManager) {
+        delete networkManager;
+        networkManager = NULL;
+    }
+    if (bookManager) {
+        delete bookManager;
+        bookManager = NULL;
+    }
+    
+    logMsg("Closing application normally");
+    closeLog();
+    
+    CloseApp();
+}
+
+int mainEventHandler(int type, int par1, int par2) {
+    if (type != EVT_POINTERMOVE && type != 49) {
+        logMsg("Event: %d, p1: %d, p2: %d", type, par1, par2);
+    }
+
+    switch (type) {
+        case EVT_INIT:
+            initLog();
+            logMsg("EVT_INIT");
+            SetPanelType(PANEL_ENABLED);
+            initConfig();
+            showMainScreen();
+            startConnection();
+            break;
+            
+        case EVT_USER_UPDATE:
+            logMsg("EVT_USER_UPDATE - refreshing config editor");
+            UpdateCurrentConfigPage();
             break;
             
         case EVT_CONNECTION_FAILED:
