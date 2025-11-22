@@ -105,7 +105,7 @@ static iconfigedit configItems[] = {
         (char*)"Connection",
         NULL,
         (char*)KEY_CONNECTION,
-        connectionStatusBuffer, 
+        NULL,  // Will be set dynamically
         NULL,
         NULL,
         NULL
@@ -535,13 +535,11 @@ int mainEventHandler(int type, int par1, int par2) {
             startConnection();
             break;
             
-        case EVT_USER_UPDATE: {
-            // Reopen config editor to refresh the display
-            logMsg("Refreshing config editor");
-            CloseConfigLevel();
-            showMainScreen();
+        case EVT_USER_UPDATE:
+            // Simple screen update without reopening config
+            logMsg("Updating screen");
+            FullUpdate();
             break;
-        }
             
         case EVT_CONNECTION_FAILED:
             logMsg("Showing connection failed dialog");
