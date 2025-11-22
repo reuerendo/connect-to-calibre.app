@@ -13,7 +13,6 @@
 // Custom events
 #define EVT_USER_UPDATE 20001
 #define EVT_CONNECTION_FAILED 20002
-#define EVT_SYNC_COMPLETE 20003
 #define EVT_BOOK_RECEIVED 20004
 #define EVT_SHOW_TOAST 20005
 
@@ -78,8 +77,6 @@ static const char *KEY_FAVORITE_COLUMN = "favorite_column";
 
 // Global error message buffer
 static char connectionErrorBuffer[256] = "";
-static char syncCompleteBuffer[256] = "";
-static int booksReceivedCount = 0;
 
 // Default values
 static const char *DEFAULT_IP = "192.168.1.100";
@@ -103,14 +100,13 @@ static volatile bool exitRequested = false;
 int mainEventHandler(int type, int par1, int par2);
 void performExit();
 void startConnection();
-void finalSyncMessageTimer();
 
 // Config editor structure
 static iconfigedit configItems[] = {
     {
         CFG_IPADDR,
         NULL,
-        (char *)"    IP Address",
+        (char *)"     IP Address",
         NULL,
         (char *)KEY_IP,
         (char *)DEFAULT_IP,
@@ -120,7 +116,7 @@ static iconfigedit configItems[] = {
     {
         CFG_NUMBER,
         NULL,
-        (char *)"   Port",
+        (char *)"     Port",
         NULL,
         (char *)KEY_PORT,
         (char *)DEFAULT_PORT,
@@ -130,7 +126,7 @@ static iconfigedit configItems[] = {
     {
         CFG_PASSWORD,
         NULL,
-        (char *)"    Password",
+        (char *)"     Password",
         NULL,
         (char *)KEY_PASSWORD,
         (char *)DEFAULT_PASSWORD,
@@ -140,7 +136,7 @@ static iconfigedit configItems[] = {
     {
         CFG_TEXT,
         NULL,
-        (char *)"    Read Status Column",
+        (char *)"     Read Status Column",
         NULL,
         (char *)KEY_READ_COLUMN,
         (char *)DEFAULT_READ_COLUMN,
@@ -150,7 +146,7 @@ static iconfigedit configItems[] = {
     {
         CFG_TEXT,
         NULL,
-        (char *)"    Read Date Column",
+        (char *)"     Read Date Column",
         NULL,
         (char *)KEY_READ_DATE_COLUMN,
         (char *)DEFAULT_READ_DATE_COLUMN,
@@ -160,7 +156,7 @@ static iconfigedit configItems[] = {
     {
         CFG_TEXT,
         NULL,
-        (char *)"    Favorite Column",
+        (char *)"     Favorite Column",
         NULL,
         (char *)KEY_FAVORITE_COLUMN,
         (char *)DEFAULT_FAVORITE_COLUMN,
@@ -183,21 +179,6 @@ void notifyConnectionFailed(const char* errorMsg) {
     logMsg("Connection failed: %s", errorMsg);
     snprintf(connectionErrorBuffer, sizeof(connectionErrorBuffer), "%s", errorMsg);
     SendEvent(mainEventHandler, EVT_CONNECTION_FAILED, 0, 0);
-}
-
-void notifySyncComplete(int booksReceived) {
-    booksReceivedCount = booksReceived;
-    
-    if (booksReceived == 0) {
-        snprintf(syncCompleteBuffer, sizeof(syncCompleteBuffer), 
-                 "Synchronization finished.\nNo new books received.");
-    } else {
-        snprintf(syncCompleteBuffer, sizeof(syncCompleteBuffer), 
-                 "Synchronization complete!\nReceived %d new book%s.", 
-                 booksReceived, booksReceived == 1 ? "" : "s");
-    }
-    
-    SendEvent(mainEventHandler, EVT_SYNC_COMPLETE, 0, 0);
 }
 
 void* connectionThreadFunc(void* arg) {
@@ -263,8 +244,6 @@ void* connectionThreadFunc(void* arg) {
     
     logMsg("Disconnecting");
     
-    int booksReceived = protocol->getBooksReceivedCount();
-    
     protocol->disconnect();
     networkManager->disconnect();
     
@@ -272,8 +251,6 @@ void* connectionThreadFunc(void* arg) {
     
     // Notify UI of disconnection
     SendEvent(mainEventHandler, EVT_SHOW_TOAST, TOAST_DISCONNECTED, 0);
-    
-    notifySyncComplete(booksReceived);
     
     return NULL;
 }
@@ -327,7 +304,6 @@ void startConnection() {
     }
 
     // 2. Not connected? Use standard SDK dialog to connect.
-    // REMOVED: Intermediate "Connecting to WiFi..." toast
     
     // NetConnect(NULL) calls the native system dialog.
     int netResult = NetConnect(NULL);
@@ -423,7 +399,6 @@ void performExit() {
     
     // Clear the start timer if we exit immediately
     ClearTimer((iv_timerproc)connectionTimerFunc);
-	ClearTimer((iv_timerproc)finalSyncMessageTimer);
     
     stopConnection();
     
@@ -439,21 +414,7 @@ void performExit() {
     CloseApp();
 }
 
-void finalSyncMessageTimer() {
-    ClearTimer((iv_timerproc)finalSyncMessageTimer);
-
-    char msgBuffer[128];
-    snprintf(msgBuffer, sizeof(msgBuffer), 
-             "Batch sync finished.\nTotal received: %d book%s.", 
-             booksReceivedCount, booksReceivedCount == 1 ? "" : "s");
-             
-    Message(ICON_INFORMATION, "Sync Complete", msgBuffer, 4000);
-    SoftUpdate();
-}
-
 int mainEventHandler(int type, int par1, int par2) {
-    // REMOVED: Excessive event logging (logMsg("Event: %d..."))
-
     switch (type) {
         case EVT_INIT:
             initLog();
@@ -501,10 +462,6 @@ int mainEventHandler(int type, int par1, int par2) {
             }
             break;
             
-        case EVT_SYNC_COMPLETE:
-            Message(ICON_INFORMATION, "Success", syncCompleteBuffer, 5000);
-            break;
-            
         case EVT_SHOW:
             SoftUpdate();
             break;
@@ -515,17 +472,6 @@ int mainEventHandler(int type, int par1, int par2) {
                 return 1;
             }
             break;
-			
-		case EVT_BOOK_RECEIVED: 
-        {
-            int count = par1;
-            booksReceivedCount = count;
-            
-            // Reset the sync finalize timer every time we receive a book
-            ClearTimer((iv_timerproc)finalSyncMessageTimer);
-            SetWeakTimer("SyncFinalize", (iv_timerproc)finalSyncMessageTimer, 1000);
-            break;
-        }
 
         case EVT_EXIT:
             if (!exitRequested) {
