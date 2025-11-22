@@ -1,0 +1,45 @@
+# Build directories
+build/
+bin/
+obj/
+
+# SDK directory (should be downloaded separately)
+SDK/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Compiled files
+*.o
+*.a
+*.so
+*.app
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+install_manifest.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Cache files (created by application on device)
+calibre_cache_*.json
+calibre-connect.log

@@ -2,6 +2,7 @@
 #include "network.h"
 #include "calibre_protocol.h"
 #include "book_manager.h"
+#include "cache_manager.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -88,6 +89,7 @@ static const char *DEFAULT_FAVORITE_COLUMN = "#favorite";
 // Connection state
 static NetworkManager* networkManager = NULL;
 static BookManager* bookManager = NULL;
+static CacheManager* cacheManager = NULL;
 static CalibreProtocol* protocol = NULL;
 static pthread_t connectionThread;
 static pthread_t wifiThread;
@@ -213,14 +215,12 @@ void notifySyncComplete(int booksReceived) {
     SendEvent(mainEventHandler, EVT_SYNC_COMPLETE, 0, 0);
 }
 
-// Check if WiFi is connected using GetNetState
 bool isWiFiConnected() {
     NET_STATE state = GetNetState();
     logMsg("GetNetState() = %d (CONNECTED=%d)", state, CONNECTED);
     return state == CONNECTED;
 }
 
-// Check if WiFi hardware is ready
 bool isWiFiHardwareReady() {
     int netStatus = QueryNetwork();
     logMsg("QueryNetwork() = 0x%X (WIFIREADY=0x%X, CONNECTED=0x%X)", 
@@ -228,14 +228,12 @@ bool isWiFiHardwareReady() {
     return (netStatus & NET_WIFIREADY) != 0;
 }
 
-// WiFi enable thread function - waits for connection
 void* wifiEnableThreadFunc(void* arg) {
     logMsg("WiFi enable thread started");
     wifiEnabling = true;
     
     updateConnectionStatus("Enabling WiFi...");
     
-    // First check current state
     if (isWiFiConnected()) {
         logMsg("WiFi already connected");
         wifiEnabling = false;
@@ -243,12 +241,10 @@ void* wifiEnableThreadFunc(void* arg) {
         return NULL;
     }
     
-    // Try to power on WiFi hardware
     logMsg("Calling WiFiPower(1)");
     int result = WiFiPower(1);
     logMsg("WiFiPower result: %d", result);
     
-    // Wait a bit for hardware to initialize
     usleep(500000); // 500ms
     
     if (shouldStop || exitRequested) {
@@ -257,19 +253,12 @@ void* wifiEnableThreadFunc(void* arg) {
         return NULL;
     }
     
-    // Try to connect using NetConnect with NULL (auto-connect to known network)
     logMsg("Calling NetConnect(NULL)");
     updateConnectionStatus("Connecting to WiFi...");
     
     result = NetConnect(NULL);
     logMsg("NetConnect result: %d (NET_OK=%d)", result, NET_OK);
     
-    if (result != NET_OK) {
-        logMsg("NetConnect failed with code %d", result);
-        // Don't fail immediately, check if we got connected anyway
-    }
-    
-    // Wait for connection with timeout
     const int maxWaitSeconds = 15;
     const int checkIntervalMs = 500;
     int waitedMs = 0;
@@ -291,7 +280,6 @@ void* wifiEnableThreadFunc(void* arg) {
         usleep(checkIntervalMs * 1000);
         waitedMs += checkIntervalMs;
         
-        // Update status every 2 seconds
         if (waitedMs % 2000 == 0) {
             char buf[64];
             snprintf(buf, sizeof(buf), "Connecting to WiFi... %ds", waitedMs / 1000);
@@ -305,7 +293,6 @@ void* wifiEnableThreadFunc(void* arg) {
     return NULL;
 }
 
-// Start WiFi enable process
 void startWifiEnable() {
     if (wifiEnabling) {
         logMsg("WiFi enable already in progress");
@@ -410,7 +397,6 @@ void* connectionThreadFunc(void* arg) {
     return NULL;
 }
 
-// Start actual connection to Calibre (called after WiFi is ready)
 void startConnectionAfterWifi() {
     if (isConnecting) return;
     
@@ -424,13 +410,16 @@ void startConnectionAfterWifi() {
         bookManager = new BookManager();
         bookManager->initialize("");
     }
+    if (!cacheManager) {
+        cacheManager = new CacheManager();
+    }
     
     if (!protocol) {
         const char* readCol = ReadString(appConfig, KEY_READ_COLUMN, DEFAULT_READ_COLUMN);
         const char* readDateCol = ReadString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
         const char* favCol = ReadString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
         
-        protocol = new CalibreProtocol(networkManager, bookManager, 
+        protocol = new CalibreProtocol(networkManager, bookManager, cacheManager,
                                       readCol ? readCol : "", 
                                       readDateCol ? readDateCol : "", 
                                       favCol ? favCol : "");
@@ -452,14 +441,12 @@ void startConnection() {
     
     logMsg("startConnection called");
     
-    // Check if WiFi is already connected
     if (isWiFiConnected()) {
         logMsg("WiFi already connected, starting Calibre connection");
         startConnectionAfterWifi();
         return;
     }
     
-    // Need to enable WiFi first
     logMsg("WiFi not connected, starting WiFi enable");
     startWifiEnable();
 }
@@ -582,6 +569,10 @@ void performExit() {
         delete protocol;
         protocol = NULL;
     }
+    if (cacheManager) {
+        delete cacheManager;
+        cacheManager = NULL;
+    }
     if (networkManager) {
         delete networkManager;
         networkManager = NULL;
@@ -662,6 +653,10 @@ int mainEventHandler(int type, int par1, int par2) {
                 if (protocol) {
                     delete protocol;
                     protocol = NULL;
+                }
+                if (cacheManager) {
+                    delete cacheManager;
+                    cacheManager = NULL;
                 }
                 if (networkManager) {
                     delete networkManager;

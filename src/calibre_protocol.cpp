@@ -2,7 +2,6 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <vector>
-#include "calibre_protocol.h"
 #include "inkview.h"
 #include <json-c/json.h>
 #include <openssl/sha.h>
@@ -77,10 +76,12 @@ static std::string safeGetJsonString(json_object* val) {
 }
 
 CalibreProtocol::CalibreProtocol(NetworkManager* net, BookManager* bookMgr,
+                                 CacheManager* cacheMgr,
                                  const std::string& readCol, 
                                  const std::string& readDateCol, 
                                  const std::string& favCol) 
-    : network(net), bookManager(bookMgr), connected(false),
+    : network(net), bookManager(bookMgr), cacheManager(cacheMgr),
+      connected(false),
       readColumn(readCol), readDateColumn(readDateCol), favoriteColumn(favCol),
       currentBookLength(0), currentBookReceived(0), currentBookFile(nullptr),
       booksReceivedInSession(0) {
@@ -248,6 +249,14 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
         uuid = ReadString(GetGlobalConfig(), "calibre_device_uuid", "");
     }
     
+    // Store device UUID for cache manager
+    deviceUuid = uuid;
+    
+    // Initialize cache with device UUID
+    if (cacheManager) {
+        cacheManager->initialize(deviceUuid);
+    }
+    
     json_object_object_add(deviceData, "device_store_uuid", 
                           json_object_new_string(uuid));
     json_object_object_add(deviceData, "device_name", 
@@ -389,6 +398,11 @@ void CalibreProtocol::disconnect() {
         iv_fclose(currentBookFile);
         currentBookFile = nullptr;
     }
+    
+    // Save cache on disconnect
+    if (cacheManager) {
+        cacheManager->saveCache();
+    }
 }
 
 bool CalibreProtocol::handleSetCalibreInfo(json_object* args) {
@@ -440,11 +454,11 @@ bool CalibreProtocol::handleSetLibraryInfo(json_object* args) {
 }
 
 bool CalibreProtocol::handleGetBookCount(json_object* args) {
-    // 1. Загружаем все книги в сессионный кэш
+    // 1. Load all books into session cache
     sessionBooks = bookManager->getAllBooks();
     int count = sessionBooks.size();
     
-    // 2. Проверяем, хочет ли Calibre использовать кэш
+    // 2. Check if Calibre wants to use cache
     bool useCache = false;
     json_object* cacheObj = NULL;
     if (json_object_object_get_ex(args, "willUseCachedMetadata", &cacheObj)) {
@@ -453,10 +467,9 @@ bool CalibreProtocol::handleGetBookCount(json_object* args) {
     
     logProto("GetBookCount: %d books, useCache=%d", count, useCache);
 
-    // 3. Отправляем ответ с количеством
+    // 3. Send response with count
     json_object* response = json_object_new_object();
     json_object_object_add(response, "count", json_object_new_int(count));
-    // Эти флаги важны для драйвера SmartDevice
     json_object_object_add(response, "willStream", json_object_new_boolean(true));
     json_object_object_add(response, "willScan", json_object_new_boolean(true));
     
@@ -466,17 +479,16 @@ bool CalibreProtocol::handleGetBookCount(json_object* args) {
     }
     freeJSON(response);
     
-    // 4. Отправляем список книг (по одной)
+    // 4. Send book list (one by one)
     for (int i = 0; i < count; i++) {
         json_object* bookJson = NULL;
         
         if (useCache) {
-            // Отправляем только краткую инфу + priKey (индекс)
+            // Send only brief info + priKey (index)
             bookJson = cachedMetadataToJson(sessionBooks[i], i);
         } else {
-            // Отправляем полные метаданные
+            // Send full metadata
             bookJson = metadataToJson(sessionBooks[i]);
-            // Даже в полных данных полезно добавить priKey, хотя не строго обязательно
             json_object_object_add(bookJson, "priKey", json_object_new_int(i));
         }
         
@@ -491,22 +503,14 @@ bool CalibreProtocol::handleGetBookCount(json_object* args) {
     return true;
 }
 
-// Вспомогательная функция (можно добавить перед handleSendBooklists или внутри как лямбду)
 static std::string cleanCollectionName(const std::string& rawName) {
-    // Логика аналогична Lua: collection_name:match("^(.-)%s*%(.*%)$")
-    // Ищем последнее вхождение " (" перед закрывающей скобкой в конце
-    
     if (rawName.empty() || rawName.back() != ')') {
         return rawName;
     }
 
-    // Ищем последнюю открывающую скобку
     size_t lastOpen = rawName.rfind('(');
     
-    // Проверяем, что скобка найдена, она не в начале, и перед ней есть пробел
     if (lastOpen != std::string::npos && lastOpen > 0 && rawName[lastOpen - 1] == ' ') {
-        // Возвращаем подстроку до пробела перед скобкой
-        // lastOpen - 1 удалит пробел перед скобкой
         return rawName.substr(0, lastOpen - 1);
     }
     
@@ -518,9 +522,7 @@ bool CalibreProtocol::handleSendBooklists(json_object* args) {
     if (json_object_object_get_ex(args, "collections", &collectionsObj)) {
         std::map<std::string, std::vector<std::string>> collections;
         
-        // Итерация по объекту коллекций
         json_object_object_foreach(collectionsObj, key, val) {
-            // ОЧИСТКА ИМЕНИ: "Series (series)" -> "Series"
             std::string cleanName = cleanCollectionName(key);
             
             std::vector<std::string> lpaths;
@@ -530,7 +532,6 @@ bool CalibreProtocol::handleSendBooklists(json_object* args) {
                 lpaths.push_back(json_object_get_string(lpathObj));
             }
             
-            // Используем очищенное имя как ключ
             collections[cleanName] = lpaths;
         }
         
@@ -539,7 +540,6 @@ bool CalibreProtocol::handleSendBooklists(json_object* args) {
     return true;
 }
 
-// Helper to safely convert JSON array or string to string
 std::string CalibreProtocol::parseJsonStringOrArray(json_object* val) {
     if (!val || json_object_get_type(val) == json_type_null) return "";
     
@@ -554,7 +554,6 @@ std::string CalibreProtocol::parseJsonStringOrArray(json_object* val) {
         for (int i = 0; i < len; i++) {
             json_object* item = json_object_array_get_idx(val, i);
             if (i > 0) result += ", ";
-            // Безопасное получение строки, даже если это число или null
             const char* str = json_object_get_string(item);
             if (str) {
                 result += str;
@@ -597,7 +596,6 @@ BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
     BookMetadata metadata;
     json_object* val = NULL;
     
-    // Стандартные поля
     if (json_object_object_get_ex(obj, "uuid", &val)) metadata.uuid = safeGetJsonString(val);
     if (json_object_object_get_ex(obj, "title", &val)) metadata.title = safeGetJsonString(val);
     if (json_object_object_get_ex(obj, "authors", &val)) metadata.authors = parseJsonStringOrArray(val);
@@ -608,34 +606,25 @@ BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
     if (json_object_object_get_ex(obj, "size", &val)) metadata.size = json_object_get_int64(val);
     if (json_object_object_get_ex(obj, "last_modified", &val)) metadata.lastModified = safeGetJsonString(val);
 
-    // --- ЛОГИКА СИНХРОНИЗАЦИИ ---
-    
-    // 1. Проверяем стандартный флаг _is_read_ (иногда присылается напрямую)
     if (json_object_object_get_ex(obj, "_is_read_", &val)) {
         metadata.isRead = json_object_get_boolean(val);
     }
     
-    // 2. Разбираем user_metadata для пользовательских колонок
     json_object* userMeta = NULL;
     if (json_object_object_get_ex(obj, "user_metadata", &userMeta)) {
-        
-        // Обработка колонки статуса (#read)
         if (!readColumn.empty()) {
             bool readVal = getUserMetadataBool(userMeta, readColumn);
             if (readVal) metadata.isRead = true;
         }
         
-        // Обработка колонки избранного (#favorite)
         if (!favoriteColumn.empty()) {
             metadata.isFavorite = getUserMetadataBool(userMeta, favoriteColumn);
         }
         
-        // Обработка колонки даты прочтения (#read_date)
         if (!readDateColumn.empty()) {
             std::string dateStr = getUserMetadataString(userMeta, readDateColumn);
             if (!dateStr.empty()) {
                 metadata.lastReadDate = dateStr;
-                // Если дата прочтения есть, считаем книгу прочитанной
                 metadata.isRead = true; 
             }
         }
@@ -644,7 +633,6 @@ BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
     return metadata;
 }
 
-// This method constructs the JSON sent back to Calibre (Device -> Calibre)
 json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
     json_object* obj = json_object_new_object();
     
@@ -655,16 +643,12 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
     json_object_object_add(obj, "last_modified", json_object_new_string(metadata.lastModified.c_str()));
     json_object_object_add(obj, "size", json_object_new_int64(metadata.size));
     
-    // --- ОТПРАВКА СТАТУСОВ В CALIBRE ---
-    
-    // Отправляем статус прочтения
     if (metadata.isRead) {
         json_object_object_add(obj, "_is_read_", json_object_new_boolean(true));
     } else {
         json_object_object_add(obj, "_is_read_", json_object_new_boolean(false));
     }
     
-    // Отправляем дату прочтения
     if (!metadata.lastReadDate.empty()) {
         json_object_object_add(obj, "_last_read_date_", json_object_new_string(metadata.lastReadDate.c_str()));
     }
@@ -675,7 +659,6 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
 bool CalibreProtocol::handleSendBook(json_object* args) {
     logProto("Starting handleSendBook");
     
-    // Parse book metadata
     json_object* metadataObj = NULL;
     json_object* lpathObj = NULL;
     json_object* lengthObj = NULL;
@@ -696,11 +679,9 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     metadata.lpath = currentBookLpath;
     metadata.size = currentBookLength;
     
-    // 1. Prepare File System FIRST (Critical Fix)
     std::string filePath = bookManager->getBookFilePath(currentBookLpath);
     logProto("Target path: %s", filePath.c_str());
     
-    // Create directories
     size_t pos = filePath.rfind('/');
     if (pos != std::string::npos) {
         std::string dir = filePath.substr(0, pos);
@@ -716,7 +697,6 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
         return sendErrorResponse("Failed to create book file");
     }
     
-    // 2. Send OK response to start receiving
     json_object* response = json_object_new_object();
     json_object_object_add(response, "lpath", json_object_new_string(currentBookLpath.c_str()));
     
@@ -729,7 +709,6 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     }
     freeJSON(response);
     
-    // 3. Receive binary data
     const size_t CHUNK_SIZE = 4096;
     std::vector<char> buffer(CHUNK_SIZE);
     
@@ -760,9 +739,15 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     iv_fclose(currentBookFile);
     currentBookFile = nullptr;
     
-    // Add book to database
     bookManager->addBook(metadata);
-    logProto("Book added to DB.");
+    
+    // Update cache with new book
+    if (cacheManager) {
+        cacheManager->updateCache(metadata);
+    }
+    
+    booksReceivedInSession++;
+    logProto("Book added to DB and cache.");
     
     return true;
 }
@@ -773,15 +758,13 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
         return sendErrorResponse("Missing metadata");
     }
     
-    // Парсим входящие метаданные с учетом наших новых колонок
     BookMetadata metadata = jsonToMetadata(dataObj);
     
     logProto("Syncing metadata for: %s (Read: %d, Date: %s)", 
              metadata.title.c_str(), metadata.isRead, metadata.lastReadDate.c_str());
     
-    // Обновляем базу данных
     if (bookManager->updateBookSync(metadata)) {
-        // Обновляем сессионный кэш, чтобы он соответствовал базе
+        // Update session cache
         for(auto& b : sessionBooks) {
             if (b.lpath == metadata.lpath) { 
                 b.isRead = metadata.isRead;
@@ -789,6 +772,11 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
                 b.lastReadDate = metadata.lastReadDate;
                 break;
             }
+        }
+        
+        // Update cache manager
+        if (cacheManager) {
+            cacheManager->updateCache(metadata);
         }
     } else {
         logProto("Warning: Attempted to sync metadata for non-existent book");
@@ -808,13 +796,23 @@ bool CalibreProtocol::handleDeleteBook(json_object* args) {
         json_object* lpathObj = json_object_array_get_idx(lpathsObj, i);
         std::string lpath = json_object_get_string(lpathObj);
         
-        // ИСПРАВЛЕНИЕ: Вызываем deleteBook напрямую по пути
+        // Find UUID before deletion for cache removal
+        std::string uuid;
+        for (const auto& book : sessionBooks) {
+            if (book.lpath == lpath) {
+                uuid = book.uuid;
+                break;
+            }
+        }
+        
         bookManager->deleteBook(lpath);
+        
+        // Remove from cache
+        if (cacheManager && !uuid.empty()) {
+            cacheManager->removeFromCache(uuid, lpath);
+        }
             
-        // Calibre ожидает подтверждение для каждого файла
         json_object* response = json_object_new_object();
-        // Так как мы не храним UUID в системной БД, возвращаем пустую строку или lpath.
-        // driver.py использует это в основном для логов.
         json_object_object_add(response, "uuid", json_object_new_string("")); 
         sendOKResponse(response);
         freeJSON(response);
@@ -851,7 +849,6 @@ bool CalibreProtocol::handleGetBookFileSegment(json_object* args) {
     }
     freeJSON(response);
     
-    // Send file data
     const size_t CHUNK_SIZE = 4096;
     std::vector<char> buffer(CHUNK_SIZE);
     
@@ -883,29 +880,21 @@ bool CalibreProtocol::handleDisplayMessage(json_object* args) {
 bool CalibreProtocol::handleNoop(json_object* args) {
     json_object* val = NULL;
     
-    // 1. Handle Eject command
     if (json_object_object_get_ex(args, "ejecting", &val) && json_object_get_boolean(val)) {
         logProto("Received Eject command");
-        // Send OK before disconnecting
         json_object* response = json_object_new_object();
         sendOKResponse(response);
         freeJSON(response);
-        // We return true here, but the disconnected flag should be handled 
-        // by checking the 'ejecting' param in the main loop if needed, 
-        // or relying on the logic in handleMessages
         return true; 
     }
     
-    // 2. Handle specific book request (priKey)
     if (json_object_object_get_ex(args, "priKey", &val)) {
         int index = json_object_get_int(val);
         logProto("Calibre requested details for book index: %d", index);
         
         if (index >= 0 && index < (int)sessionBooks.size()) {
-            // Send FULL metadata for the requested book
             json_object* bookJson = metadataToJson(sessionBooks[index]);
             
-            // Add sync status
             if (sessionBooks[index].isRead) {
                 json_object_object_add(bookJson, "_is_read_", json_object_new_boolean(true));
             }
@@ -921,16 +910,11 @@ bool CalibreProtocol::handleNoop(json_object* args) {
         return true;
     }
     
-    // 3. Handle count notification (FIXED)
-    // Calibre sends {"count": X} to indicate batch size.
-    // It DOES NOT expect a response for this. Sending one desyncs the protocol.
     if (json_object_object_get_ex(args, "count", &val)) {
         logProto("Received batch count notification, ignoring response");
-        return true; // Return true but DO NOT sendOKResponse
+        return true;
     }
     
-    // 4. Standard Keep-alive NOOP
-    // Only send OK if it is a standard keep-alive (empty args usually)
     json_object* response = json_object_new_object();
     bool result = sendOKResponse(response);
     freeJSON(response);
@@ -998,6 +982,14 @@ json_object* CalibreProtocol::cachedMetadataToJson(const BookMetadata& metadata,
         ext = metadata.lpath.substr(pos + 1);
     }
     json_object_object_add(obj, "extension", json_object_new_string(ext.c_str()));
+    
+    // Add sync status for cached entries
+    json_object_object_add(obj, "_is_read_", json_object_new_boolean(metadata.isRead));
+    
+    if (!metadata.lastReadDate.empty()) {
+        json_object_object_add(obj, "_last_read_date_", 
+                              json_object_new_string(metadata.lastReadDate.c_str()));
+    }
     
     return obj;
 }

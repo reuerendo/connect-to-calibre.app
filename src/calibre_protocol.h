@@ -3,6 +3,7 @@
 
 #include "network.h"
 #include "book_manager.h"
+#include "cache_manager.h"
 #include <string>
 #include <functional>
 #include <cstdio> 
@@ -13,6 +14,7 @@ struct json_object;
 class CalibreProtocol {
 public:
     CalibreProtocol(NetworkManager* network, BookManager* bookManager,
+                   CacheManager* cacheManager,
                    const std::string& readCol, 
                    const std::string& readDateCol, 
                    const std::string& favCol);
@@ -29,6 +31,7 @@ public:
 private:
     NetworkManager* network;
     BookManager* bookManager;
+    CacheManager* cacheManager;
     bool connected;
     std::string errorMessage;
     std::vector<BookMetadata> sessionBooks;
@@ -70,7 +73,7 @@ private:
     json_object* createDeviceInfo();
     std::string getPasswordHash(const std::string& password, 
                                const std::string& challenge);
-	json_object* cachedMetadataToJson(const BookMetadata& metadata, int index);
+    json_object* cachedMetadataToJson(const BookMetadata& metadata, int index);
     
     // JSON helpers
     std::string jsonToString(json_object* obj);
