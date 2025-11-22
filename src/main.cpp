@@ -1,3 +1,7 @@
+{
+type: uploaded file
+fileName: main.cpp
+fullContent:
 #include "inkview.h"
 #include "network.h"
 #include "calibre_protocol.h"
@@ -15,6 +19,12 @@
 #define EVT_CONNECTION_FAILED 20002
 #define EVT_SYNC_COMPLETE 20003
 #define EVT_BOOK_RECEIVED 20004
+#define EVT_SHOW_TOAST 20005  // New event for status messages
+
+// Toast types
+#define TOAST_CONNECTING 1
+#define TOAST_CONNECTED 2
+#define TOAST_DISCONNECTED 3
 
 // Debug logging
 static FILE* logFile = NULL;
@@ -69,10 +79,8 @@ static const char *KEY_PASSWORD = "password";
 static const char *KEY_READ_COLUMN = "read_column";
 static const char *KEY_READ_DATE_COLUMN = "read_date_column";
 static const char *KEY_FAVORITE_COLUMN = "favorite_column";
-static const char *KEY_CONNECTION = "connection_enabled";
 
-// Global connection status buffer and error message
-static char connectionStatusBuffer[128] = "Disconnected"; 
+// Global error message buffer
 static char connectionErrorBuffer[256] = "";
 static char syncCompleteBuffer[256] = "";
 static int booksReceivedCount = 0;
@@ -103,17 +111,6 @@ void finalSyncMessageTimer();
 
 // Config editor structure
 static iconfigedit configItems[] = {
-    {
-        CFG_INFO,
-        NULL,
-        (char*)"    Connection",
-        NULL,
-        (char*)KEY_CONNECTION,
-        connectionStatusBuffer, 
-        NULL,
-        NULL,
-        NULL
-    },
     {
         CFG_IPADDR,
         NULL,
@@ -186,17 +183,6 @@ static iconfigedit configItems[] = {
     }
 };
 
-void updateConnectionStatus(const char* status) {
-    logMsg("Status update: %s", status);
-    snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "%s", status);
-    
-    if (appConfig) {
-        WriteString(appConfig, KEY_CONNECTION, status);
-    }
-    
-    SendEvent(mainEventHandler, EVT_USER_UPDATE, 0, 0);
-}
-
 void notifyConnectionFailed(const char* errorMsg) {
     logMsg("Connection failed: %s", errorMsg);
     snprintf(connectionErrorBuffer, sizeof(connectionErrorBuffer), "%s", errorMsg);
@@ -222,7 +208,8 @@ void notifySyncComplete(int booksReceived) {
 void* connectionThreadFunc(void* arg) {
     logMsg("Connection thread started");
     
-    updateConnectionStatus("Connecting...");
+    // Notify UI that we are attempting to connect
+    SendEvent(mainEventHandler, EVT_SHOW_TOAST, TOAST_CONNECTING, 0);
     
     const char* ip = ReadString(appConfig, KEY_IP, DEFAULT_IP);
     int port = ReadInt(appConfig, KEY_PORT, atoi(DEFAULT_PORT));
@@ -246,7 +233,6 @@ void* connectionThreadFunc(void* arg) {
     if (shouldStop) {
         logMsg("Connection cancelled before connect");
         isConnecting = false;
-        updateConnectionStatus("Disconnected");
         return NULL;
     }
     
@@ -254,7 +240,6 @@ void* connectionThreadFunc(void* arg) {
     if (!networkManager->connectToServer(ip, port)) {
         logMsg("Connection failed");
         isConnecting = false;
-        updateConnectionStatus("Disconnected");
         notifyConnectionFailed("Failed to connect to Calibre server.\nPlease check IP address and port.");
         return NULL;
     }
@@ -263,18 +248,15 @@ void* connectionThreadFunc(void* arg) {
         logMsg("Connection cancelled after connect");
         networkManager->disconnect();
         isConnecting = false;
-        updateConnectionStatus("Disconnected");
         return NULL;
     }
     
     logMsg("Connected, starting handshake");
-    updateConnectionStatus("Handshake...");
     
     if (!protocol->performHandshake(password)) {
         logMsg("Handshake failed: %s", protocol->getErrorMessage().c_str());
         networkManager->disconnect();
         isConnecting = false;
-        updateConnectionStatus("Disconnected");
         
         std::string errorMsg = "Handshake failed: ";
         errorMsg += protocol->getErrorMessage();
@@ -282,15 +264,17 @@ void* connectionThreadFunc(void* arg) {
         return NULL;
     }
     
+    // Handshake successful - Notify UI of connection
     logMsg("Handshake successful");
-    updateConnectionStatus("Connected");
+    SendEvent(mainEventHandler, EVT_SHOW_TOAST, TOAST_CONNECTED, 0);
     
     protocol->handleMessages([](const std::string& status) {
         if (status == "BOOK_SAVED") {
             int count = protocol->getBooksReceivedCount();
             SendEvent(mainEventHandler, EVT_BOOK_RECEIVED, count, 0);
         } else {
-            updateConnectionStatus(status.c_str());
+            // We just log intermediate statuses now instead of updating UI
+            logMsg("Protocol status: %s", status.c_str());
         }
     });
     
@@ -301,8 +285,10 @@ void* connectionThreadFunc(void* arg) {
     protocol->disconnect();
     networkManager->disconnect();
     
-    updateConnectionStatus("Disconnected");
     isConnecting = false;
+    
+    // Notify UI of disconnection
+    SendEvent(mainEventHandler, EVT_SHOW_TOAST, TOAST_DISCONNECTED, 0);
     
     notifySyncComplete(booksReceived);
     
@@ -342,7 +328,6 @@ void startCalibreConnection() {
     
     if (pthread_create(&connectionThread, NULL, connectionThreadFunc, NULL) != 0) {
         logMsg("Failed to create connection thread");
-        updateConnectionStatus("Disconnected");
         isConnecting = false;
         return;
     }
@@ -356,7 +341,6 @@ void startConnection() {
     }
     
     logMsg("Ensuring WiFi connection...");
-    updateConnectionStatus("Checking WiFi...");
 
     // 1. Check if we are already connected
     iv_netinfo* netInfo = NetInfo();
@@ -367,7 +351,7 @@ void startConnection() {
     }
 
     // 2. Not connected? Use standard SDK dialog to connect.
-    updateConnectionStatus("Connecting to WiFi...");
+    Message(ICON_INFORMATION, "WiFi", "Connecting to WiFi...", 1000);
     
     // NetConnect(NULL) calls the native system dialog.
     int netResult = NetConnect(NULL);
@@ -378,7 +362,6 @@ void startConnection() {
         startCalibreConnection();
     } else {
         logMsg("WiFi connection failed or cancelled. Result: %d", netResult);
-        updateConnectionStatus("WiFi Failed");
         
         const char* errorMsg = "Could not connect to WiFi network.";
         notifyConnectionFailed(errorMsg);
@@ -388,7 +371,7 @@ void startConnection() {
 // Timer callback to delay connection start until UI is drawn
 void connectionTimerFunc() {
     logMsg("Timer fired: starting connection sequence");
-    // Ensure timer is cleared (though WeakTimer usually fires once/handled by system)
+    // Ensure timer is cleared
     ClearTimer((iv_timerproc)connectionTimerFunc);
     startConnection();
 }
@@ -405,8 +388,6 @@ void stopConnection() {
         pthread_detach(connectionThread);
         isConnecting = false;
     }
-    
-    snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "Disconnected");
 }
 
 void initConfig() {
@@ -422,20 +403,13 @@ void initConfig() {
             WriteString(appConfig, KEY_READ_COLUMN, DEFAULT_READ_COLUMN);
             WriteString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
             WriteString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
-            WriteString(appConfig, KEY_CONNECTION, "Disconnected");
             SaveConfig(appConfig);
         }
-    }
-
-    if (appConfig) {
-        snprintf(connectionStatusBuffer, sizeof(connectionStatusBuffer), "Disconnected");
-        WriteString(appConfig, KEY_CONNECTION, "Disconnected");
     }
 }
 
 void saveAndCloseConfig() {
     if (appConfig) {
-        WriteString(appConfig, KEY_CONNECTION, "Disconnected");
         SaveConfig(appConfig);
         CloseConfig(appConfig);
         appConfig = NULL;
@@ -535,8 +509,6 @@ void finalSyncMessageTimer() {
              booksReceivedCount, booksReceivedCount == 1 ? "" : "s");
              
     Message(ICON_INFORMATION, "Sync Complete", msgBuffer, 4000);
-    
-    updateConnectionStatus("Connected (Idle)");
     SoftUpdate();
 }
 
@@ -575,7 +547,6 @@ int mainEventHandler(int type, int par1, int par2) {
             logMsg("EVT_NET_DISCONNECTED received");
             if (isConnecting) {
                 stopConnection();
-                updateConnectionStatus("WiFi disconnected");
             }
             break;
             
@@ -586,6 +557,17 @@ int mainEventHandler(int type, int par1, int par2) {
                    connectionErrorBuffer,
                    "Retry", "Cancel", 
                    retryConnectionHandler);
+            break;
+
+        case EVT_SHOW_TOAST:
+            // Handle toast messages for connection status
+            if (par1 == TOAST_CONNECTING) {
+                Message(ICON_INFORMATION, "Calibre", "Connecting to Calibre...", 1500);
+            } else if (par1 == TOAST_CONNECTED) {
+                Message(ICON_INFORMATION, "Calibre", "Connected Successfully", 2000);
+            } else if (par1 == TOAST_DISCONNECTED) {
+                Message(ICON_INFORMATION, "Calibre", "Disconnected", 2000);
+            }
             break;
             
         case EVT_SYNC_COMPLETE:
@@ -608,19 +590,11 @@ int mainEventHandler(int type, int par1, int par2) {
 		case EVT_BOOK_RECEIVED: 
         {
             int count = par1;
-            
             booksReceivedCount = count;
-
-            char statusBuffer[64];
-            snprintf(statusBuffer, sizeof(statusBuffer), "Receiving... (%d book%s)", 
-                     count, count == 1 ? "" : "s");
-            updateConnectionStatus(statusBuffer);
-            SoftUpdate();
-
-            ClearTimer((iv_timerproc)finalSyncMessageTimer);
-
-            SetWeakTimer("SyncFinalize", (iv_timerproc)finalSyncMessageTimer, 1000);
             
+            // Reset the sync finalize timer every time we receive a book
+            ClearTimer((iv_timerproc)finalSyncMessageTimer);
+            SetWeakTimer("SyncFinalize", (iv_timerproc)finalSyncMessageTimer, 1000);
             break;
         }
 
@@ -646,4 +620,5 @@ int mainEventHandler(int type, int par1, int par2) {
 int main(int argc, char *argv[]) {
     InkViewMain(mainEventHandler);
     return 0;
+}
 }
