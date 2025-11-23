@@ -35,6 +35,8 @@ struct BookMetadata {
     bool originalIsFavorite;
     bool hasOriginalValues;
     
+    std::string formatMtime;
+    
     int dbBookId; 
     
     BookMetadata() : seriesIndex(0), size(0), thumbnailHeight(0), 
@@ -42,7 +44,6 @@ struct BookMetadata {
                      originalIsRead(false), originalIsFavorite(false),
                      hasOriginalValues(false), dbBookId(-1) {}
 };
-
 class BookManager {
 public:
     BookManager();

@@ -80,6 +80,16 @@ private:
     json_object* parseJSON(const std::string& jsonStr);
     void freeJSON(json_object* obj);
     std::string parseJsonStringOrArray(json_object* val);
+	private:
+    
+    // Helper to format timestamp to ISO 8601
+    std::string formatIsoTime(time_t timestamp) {
+        if (timestamp == 0) return "1970-01-01T00:00:00+00:00";
+        char buffer[32];
+        struct tm* tm_info = gmtime(&timestamp);
+        strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S+00:00", tm_info);
+        return std::string(buffer);
+    }
     
     // Metadata conversion
     BookMetadata jsonToMetadata(json_object* obj);

@@ -137,6 +137,12 @@ bool CacheManager::loadCache() {
             metadata.lastModified = str ? str : "";
         }
         
+        // NEW: Load format mtime
+        if (json_object_object_get_ex(bookObj, "_format_mtime_", &tmp)) {
+            const char* str = json_object_get_string(tmp);
+            metadata.formatMtime = str ? str : "";
+        }
+        
         // Current sync fields
         if (json_object_object_get_ex(bookObj, "_is_read_", &tmp)) {
             metadata.isRead = json_object_get_boolean(tmp);
@@ -149,7 +155,7 @@ bool CacheManager::loadCache() {
             metadata.isFavorite = json_object_get_boolean(tmp);
         }
         
-        // NEW: Load original values from cache
+        // Original values
         if (json_object_object_get_ex(bookObj, "_original_is_read_", &tmp)) {
             metadata.originalIsRead = json_object_get_boolean(tmp);
             metadata.hasOriginalValues = true;
@@ -198,6 +204,12 @@ bool CacheManager::saveCache() {
         json_object_object_add(bookObj, "lpath", json_object_new_string(meta.lpath.c_str()));
         json_object_object_add(bookObj, "last_modified", json_object_new_string(meta.lastModified.c_str()));
         
+        // NEW: Save format mtime
+        if (!meta.formatMtime.empty()) {
+            json_object_object_add(bookObj, "_format_mtime_", 
+                                  json_object_new_string(meta.formatMtime.c_str()));
+        }
+        
         // Current sync fields
         json_object_object_add(bookObj, "_is_read_", json_object_new_boolean(meta.isRead));
         if (!meta.lastReadDate.empty()) {
@@ -205,7 +217,7 @@ bool CacheManager::saveCache() {
         }
         json_object_object_add(bookObj, "_is_favorite_", json_object_new_boolean(meta.isFavorite));
         
-        // NEW: Save original values to cache
+        // Original values
         if (meta.hasOriginalValues) {
             json_object_object_add(bookObj, "_original_is_read_", 
                                   json_object_new_boolean(meta.originalIsRead));

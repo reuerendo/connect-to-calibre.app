@@ -283,6 +283,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     std::string firstTitleLetter = getFirstLetter(metadata.title);
 
     if (fileId != -1) {
+        // NEW: Update file modification_time from stat
         const char* updateFileSql = "UPDATE files SET size = ?, modification_time = ? WHERE id = ?";
         if (sqlite3_prepare_v2(db, updateFileSql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(stmt, 1, (long long)st.st_size);
@@ -344,6 +345,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
         }
 
         if (bookId != -1) {
+            // NEW: Insert with modification_time from stat
             const char* insertFileSql = 
                 "INSERT INTO files (storageid, folder_id, book_id, filename, size, modification_time, ext) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)";
@@ -535,15 +537,16 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
             time_t fileModTime = (time_t)sqlite3_column_int64(stmt, 12);
             if (fileModTime > 0) {
                 meta.lastModified = formatIsoTime(fileModTime);
+                // NEW: Set format mtime to file modification time
+                meta.formatMtime = formatIsoTime(fileModTime);
             } else {
                 time_t updated = (time_t)sqlite3_column_int64(stmt, 6);
                 meta.lastModified = formatIsoTime(updated);
+                meta.formatMtime = formatIsoTime(updated);
             }
 
             meta.uuid = "";
             
-            // NEW: Initialize original values as same as current
-            // These will be overwritten by Calibre during SEND_BOOK_METADATA
             meta.originalIsRead = meta.isRead;
             meta.originalLastReadDate = meta.lastReadDate;
             meta.originalIsFavorite = meta.isFavorite;

@@ -680,6 +680,12 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
     json_object_object_add(obj, "last_modified", json_object_new_string(metadata.lastModified.c_str()));
     json_object_object_add(obj, "size", json_object_new_int64(metadata.size));
     
+    // NEW: Send format mtime (file modification time)
+    if (!metadata.formatMtime.empty()) {
+        json_object_object_add(obj, "_format_mtime_", 
+                              json_object_new_string(metadata.formatMtime.c_str()));
+    }
+    
     // Send CURRENT device state
     json_object_object_add(obj, "_is_read_", json_object_new_boolean(metadata.isRead));
     
@@ -688,10 +694,8 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
                               json_object_new_string(metadata.lastReadDate.c_str()));
     }
     
-    // NEW: Also send the ORIGINAL values that Calibre sent us (for sync comparison)
-    // Driver expects to find these in custom columns or as separate fields
+    // Send original values using the column names that driver expects
     if (metadata.hasOriginalValues) {
-        // Send original values using the column names that driver expects
         if (!readColumn.empty()) {
             json_object* userMeta = json_object_new_object();
             json_object* readCol = json_object_new_object();
@@ -803,15 +807,19 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     iv_fclose(currentBookFile);
     currentBookFile = nullptr;
     
+    // NEW: Set format_mtime to current time after receiving file
+    time_t now = time(NULL);
+    metadata.formatMtime = formatIsoTime(now);
+    
     bookManager->addBook(metadata);
     
-    // Update cache with new book
+    // Update cache with new book including format_mtime
     if (cacheManager) {
         cacheManager->updateCache(metadata);
     }
     
     booksReceivedInSession++;
-    logProto("Book added to DB and cache.");
+    logProto("Book added to DB and cache with format_mtime.");
     
     return true;
 }
@@ -828,6 +836,7 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
              metadata.title.c_str(), metadata.originalIsRead, 
              metadata.originalLastReadDate.c_str());
     
+    // Merge with current device state before updating
     for(auto& sessionBook : sessionBooks) {
         if (sessionBook.lpath == metadata.lpath) {
             // Keep device's CURRENT state
@@ -835,18 +844,21 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
             metadata.lastReadDate = sessionBook.lastReadDate;
             metadata.isFavorite = sessionBook.isFavorite;
             
+            // NEW: Keep existing format_mtime
+            metadata.formatMtime = sessionBook.formatMtime;
+            
             // Update the session book with new original values
             sessionBook.originalIsRead = metadata.originalIsRead;
             sessionBook.originalLastReadDate = metadata.originalLastReadDate;
             sessionBook.originalIsFavorite = metadata.originalIsFavorite;
             sessionBook.hasOriginalValues = true;
-            
-            logProto("Merged: Device state Read=%d, Original Read=%d", 
+			logProto("Merged: Device state Read=%d, Original Read=%d", 
                      sessionBook.isRead, sessionBook.originalIsRead);
             break;
         }
     }
     
+    // Only update DB if device state differs from original (local changes made)
     bool needsDbUpdate = false;
     if (metadata.hasOriginalValues) {
         if (metadata.isRead != metadata.originalIsRead ||
@@ -859,6 +871,7 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
             logProto("No local changes, only updating cache");
         }
     } else {
+        // First sync, always update
         needsDbUpdate = true;
     }
     
@@ -866,6 +879,7 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
         logProto("DB updated successfully");
     }
     
+    // Always update cache with both current and original values
     if (cacheManager) {
         cacheManager->updateCache(metadata);
     }
