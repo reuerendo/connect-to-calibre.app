@@ -739,9 +739,9 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
     }
     
     // NEW: Send _new_book_ flag for device-generated books
-    if (metadata.isNewBook) {
+    if (metadata.syncType == 3 || metadata.isNewBook) {
         json_object_object_add(obj, "_new_book_", json_object_new_boolean(true));
-        logProto("Marking book as new: %s", metadata.title.c_str());
+        logProto("Marking book as new: %s (syncType=%d)", metadata.title.c_str(), metadata.syncType);
     }
     
     // Send CURRENT device state
@@ -782,106 +782,117 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
     return obj;
 }
 
-bool CalibreProtocol::handleSendBook(json_object* args) {
-    logProto("Starting handleSendBook");
+bool CalibreProtocol::handleGetBookCount(json_object* args) {
+    // 1. Load all books from file system/DB
+    sessionBooks = bookManager->getAllBooks();
+    int count = sessionBooks.size();
     
-    json_object* metadataObj = NULL;
-    json_object* lpathObj = NULL;
-    json_object* lengthObj = NULL;
-    
-    if (!json_object_object_get_ex(args, "lpath", &lpathObj) ||
-        !json_object_object_get_ex(args, "length", &lengthObj) ||
-        !json_object_object_get_ex(args, "metadata", &metadataObj)) {
-        return sendErrorResponse("Missing required fields");
+    // 2. Check if Calibre wants to use cache
+    bool useCache = false;
+    json_object* cacheObj = NULL;
+    if (json_object_object_get_ex(args, "willUseCachedMetadata", &cacheObj)) {
+        useCache = json_object_get_boolean(cacheObj);
     }
     
-    currentBookLpath = json_object_get_string(lpathObj);
-    currentBookLength = json_object_get_int64(lengthObj);
-    currentBookReceived = 0;
+    // 3. Check if this is first sync with custom columns
+    bool supportsSync = false;
+    json_object* syncObj = NULL;
+    if (json_object_object_get_ex(args, "supportsSync", &syncObj)) {
+        supportsSync = json_object_get_boolean(syncObj);
+    }
     
-    logProto("Receiving book: %s (%lld bytes)", currentBookLpath.c_str(), currentBookLength);
+    // 4. Patch Session Books with Cached data (UUID and sync_type)
+    if (cacheManager) {
+        int matched = 0;
+        for (auto& book : sessionBooks) {
+            BookMetadata cachedMeta;
+            if (cacheManager->getCachedMetadata(book.lpath, cachedMeta)) {
+                // Restore UUID from cache
+                if (!cachedMeta.uuid.empty()) {
+                    book.uuid = cachedMeta.uuid;
+                    matched++;
+                }
+                
+                // NEW: Restore sync_type from cache
+                book.syncType = cachedMeta.syncType;
+                
+                // Restore original values from cache
+                if (cachedMeta.hasOriginalValues) {
+                    book.originalIsRead = cachedMeta.originalIsRead;
+                    book.originalLastReadDate = cachedMeta.originalLastReadDate;
+                    book.originalIsFavorite = cachedMeta.originalIsFavorite;
+                    book.hasOriginalValues = true;
+                }
+            } else {
+                // Book not in cache - generate temporary UUID
+                if (book.uuid.empty()) {
+                    // Generate a deterministic UUID based on lpath
+                    std::string uuidStr = "device_" + book.lpath;
+                    // Simple hash to make it look like UUID
+                    unsigned long hash = 5381;
+                    for (char c : uuidStr) {
+                        hash = ((hash << 5) + hash) + c;
+                    }
+                    char uuidBuf[64];
+                    snprintf(uuidBuf, sizeof(uuidBuf), "temp-%08lx-%04lx-%04lx", 
+                            hash, (hash >> 16) & 0xFFFF, (hash >> 8) & 0xFFFF);
+                    book.uuid = uuidBuf;
+                    book.isNewBook = true;
+                    book.syncType = 3; // Device-generated metadata
+                    logProto("Book not in cache, generated temp UUID: %s -> %s", 
+                            book.title.c_str(), book.uuid.c_str());
+                }
+            }
+        }
+        logProto("UUID Patching: %d/%d books matched in cache", matched, count);
+    }
     
-    BookMetadata metadata = jsonToMetadata(metadataObj);
-    metadata.lpath = currentBookLpath;
-    metadata.size = currentBookLength;
-    
-    std::string filePath = bookManager->getBookFilePath(currentBookLpath);
-    logProto("Target path: %s", filePath.c_str());
-    
-    size_t pos = filePath.rfind('/');
-    if (pos != std::string::npos) {
-        std::string dir = filePath.substr(0, pos);
-        if (recursiveMkdir(dir) != 0) {
-            logProto("Failed to create directory structure for book");
-            return sendErrorResponse("Failed to create directory");
+    // NEW: Detect first sync with custom columns (sync_type = 2)
+    if (supportsSync && !readColumn.empty()) {
+        for (auto& book : sessionBooks) {
+            // If book has UUID but no original values yet, this is first sync with columns
+            if (!book.uuid.empty() && !book.hasOriginalValues && book.syncType == 0) {
+                book.syncType = 2;
+                logProto("First sync with columns for: %s", book.title.c_str());
+            }
         }
     }
     
-    currentBookFile = iv_fopen(filePath.c_str(), "wb");
-    if (!currentBookFile) {
-        logProto("Failed to open file for writing!");
-        return sendErrorResponse("Failed to create book file");
-    }
-    
+    logProto("GetBookCount: %d books, useCache=%d, supportsSync=%d", 
+             count, useCache, supportsSync);
+
+    // 5. Send response with count
     json_object* response = json_object_new_object();
-    json_object_object_add(response, "lpath", json_object_new_string(currentBookLpath.c_str()));
+    json_object_object_add(response, "count", json_object_new_int(count));
+    json_object_object_add(response, "willStream", json_object_new_boolean(true));
+    json_object_object_add(response, "willScan", json_object_new_boolean(true));
     
     if (!sendOKResponse(response)) {
-        logProto("Failed to send OK response");
         freeJSON(response);
-        iv_fclose(currentBookFile);
-        currentBookFile = nullptr;
         return false;
     }
     freeJSON(response);
     
-    const size_t CHUNK_SIZE = 4096;
-    std::vector<char> buffer(CHUNK_SIZE);
-    
-    logProto("Starting binary transfer...");
-    
-    while (currentBookReceived < currentBookLength) {
-        size_t toRead = std::min((size_t)(currentBookLength - currentBookReceived), CHUNK_SIZE);
+    // 6. Send book list (one by one)
+    for (int i = 0; i < count; i++) {
+        json_object* bookJson = NULL;
         
-        if (!network->receiveBinaryData(buffer.data(), toRead)) {
-            logProto("Network error during file transfer");
-            iv_fclose(currentBookFile);
-            currentBookFile = nullptr;
+        if (useCache) {
+            // Send only brief info + priKey (index)
+            bookJson = cachedMetadataToJson(sessionBooks[i], i);
+        } else {
+            // Send full metadata
+            bookJson = metadataToJson(sessionBooks[i]);
+            json_object_object_add(bookJson, "priKey", json_object_new_int(i));
+        }
+        
+        std::string bookStr = jsonToString(bookJson);
+        if (!network->sendJSON(OK, bookStr.c_str())) {
+            freeJSON(bookJson);
             return false;
         }
-        
-        size_t written = fwrite(buffer.data(), 1, toRead, currentBookFile);
-        if (written != toRead) {
-            logProto("Disk write error");
-            iv_fclose(currentBookFile);
-            currentBookFile = nullptr;
-            return sendErrorResponse("Failed to write book data");
-        }
-        
-        currentBookReceived += toRead;
+        freeJSON(bookJson);
     }
-    
-    logProto("Transfer complete.");
-    iv_fclose(currentBookFile);
-    currentBookFile = nullptr;
-    
-    // Set format_mtime to current time after receiving file
-    time_t now = time(NULL);
-    metadata.formatMtime = formatIsoTime(now);
-    
-    // NEW: Book is NOT new - it came from Calibre
-    metadata.isNewBook = false;
-    metadata.syncType = 0; // Normal book
-    
-    bookManager->addBook(metadata);
-    
-    // Update cache with new book including all metadata
-    if (cacheManager) {
-        cacheManager->updateCache(metadata);
-    }
-    
-    booksReceivedInSession++;
-    logProto("Book added to DB and cache with format_mtime.");
     
     return true;
 }
@@ -899,13 +910,22 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
     
     // NEW: Handle different sync_type scenarios
     if (metadata.syncType == 3) {
-        // Device-generated metadata - DO NOT sync back to device
-        // Just store it in cache so Calibre knows about it
-        logProto("Device-generated metadata, skipping DB sync for: %s", metadata.title.c_str());
+        // Device-generated metadata - Calibre is sending us the real UUID
+        logProto("Device-generated metadata, updating with real UUID: %s -> %s", 
+                 metadata.title.c_str(), metadata.uuid.c_str());
         
         // Update session books FIRST to merge device state
+        bool found = false;
         for(auto& sessionBook : sessionBooks) {
             if (sessionBook.lpath == metadata.lpath) {
+                found = true;
+                
+                // Remove old temp UUID entry from cache if it exists
+                if (cacheManager && sessionBook.uuid.find("temp-") == 0) {
+                    logProto("Removing temp UUID from cache: %s", sessionBook.uuid.c_str());
+                    cacheManager->removeFromCache(metadata.lpath);
+                }
+                
                 // Merge device's current state into metadata for cache
                 metadata.isRead = sessionBook.isRead;
                 metadata.lastReadDate = sessionBook.lastReadDate;
@@ -924,14 +944,18 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
             }
         }
         
-        // Now update cache with merged metadata (including UUID)
+        if (!found) {
+            logProto("WARNING: Session book not found for lpath: %s", metadata.lpath.c_str());
+        }
+        
+        // Now update cache with merged metadata (including real UUID)
         if (cacheManager && !metadata.uuid.empty()) {
             // Mark as no longer "new" since Calibre now knows about it
             metadata.isNewBook = false;
             metadata.syncType = 0; // Reset to normal for future syncs
             metadata.hasOriginalValues = true;
             cacheManager->updateCache(metadata);
-            logProto("Cache updated for device-generated book: %s (UUID: %s)", 
+            logProto("Cache updated with real UUID: %s (UUID: %s)", 
                      metadata.title.c_str(), metadata.uuid.c_str());
         } else {
             logProto("WARNING: Cannot update cache - empty UUID for: %s", metadata.lpath.c_str());
