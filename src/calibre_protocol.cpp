@@ -2,6 +2,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <vector>
+#include <algorithm>
 #include "inkview.h"
 #include <json-c/json.h>
 #include <openssl/sha.h>
@@ -10,7 +11,6 @@
 #include <sstream>
 #include <iomanip>
 #include <ctime>
-#include <set>
 
 // Helper for logging
 static void logProto(const char* fmt, ...) {
