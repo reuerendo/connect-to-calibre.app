@@ -894,27 +894,26 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
     
     BookMetadata metadata = jsonToMetadata(dataObj);
     
-    logProto("Received metadata for: %s (sync_type=%d, Calibre says Read: %d)", 
-             metadata.title.c_str(), metadata.syncType, metadata.originalIsRead);
+    logProto("Received metadata for: %s (UUID=%s, sync_type=%d, Calibre says Read: %d)", 
+             metadata.title.c_str(), metadata.uuid.c_str(), metadata.syncType, metadata.originalIsRead);
     
     // NEW: Handle different sync_type scenarios
     if (metadata.syncType == 3) {
         // Device-generated metadata - DO NOT sync back to device
         // Just store it in cache so Calibre knows about it
-        logProto("Device-generated metadata, skipping sync for: %s", metadata.title.c_str());
+        logProto("Device-generated metadata, skipping DB sync for: %s", metadata.title.c_str());
         
-        // Update cache only, don't touch DB
-        if (cacheManager) {
-            // Mark as no longer "new" since Calibre now knows about it
-            metadata.isNewBook = false;
-            metadata.syncType = 0; // Reset to normal for future syncs
-            cacheManager->updateCache(metadata);
-        }
-        
-        // Update session books
+        // Update session books FIRST to merge device state
         for(auto& sessionBook : sessionBooks) {
             if (sessionBook.lpath == metadata.lpath) {
-                sessionBook.uuid = metadata.uuid; // Calibre assigned UUID
+                // Merge device's current state into metadata for cache
+                metadata.isRead = sessionBook.isRead;
+                metadata.lastReadDate = sessionBook.lastReadDate;
+                metadata.isFavorite = sessionBook.isFavorite;
+                metadata.formatMtime = sessionBook.formatMtime;
+                
+                // Update session book with new UUID from Calibre
+                sessionBook.uuid = metadata.uuid;
                 sessionBook.isNewBook = false;
                 sessionBook.syncType = 0;
                 sessionBook.hasOriginalValues = true;
@@ -923,6 +922,19 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
                 sessionBook.originalIsFavorite = metadata.originalIsFavorite;
                 break;
             }
+        }
+        
+        // Now update cache with merged metadata (including UUID)
+        if (cacheManager && !metadata.uuid.empty()) {
+            // Mark as no longer "new" since Calibre now knows about it
+            metadata.isNewBook = false;
+            metadata.syncType = 0; // Reset to normal for future syncs
+            metadata.hasOriginalValues = true;
+            cacheManager->updateCache(metadata);
+            logProto("Cache updated for device-generated book: %s (UUID: %s)", 
+                     metadata.title.c_str(), metadata.uuid.c_str());
+        } else {
+            logProto("WARNING: Cannot update cache - empty UUID for: %s", metadata.lpath.c_str());
         }
         
         return true;
@@ -949,12 +961,12 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
                 }
                 
                 // Update session book
+                sessionBook.uuid = metadata.uuid;
                 sessionBook.originalIsRead = metadata.originalIsRead;
                 sessionBook.originalLastReadDate = metadata.originalLastReadDate;
                 sessionBook.originalIsFavorite = metadata.originalIsFavorite;
                 sessionBook.hasOriginalValues = true;
                 sessionBook.syncType = 0; // Reset to normal after first sync
-                sessionBook.formatMtime = metadata.formatMtime;
                 
                 break;
             }
@@ -963,7 +975,7 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
         // Always update DB for first sync
         bookManager->updateBookSync(metadata);
         
-        if (cacheManager) {
+        if (cacheManager && !metadata.uuid.empty()) {
             metadata.syncType = 0; // Store as normal in cache
             cacheManager->updateCache(metadata);
         }
@@ -984,6 +996,7 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
             metadata.formatMtime = sessionBook.formatMtime;
             
             // Update the session book with new original values
+            sessionBook.uuid = metadata.uuid;
             sessionBook.originalIsRead = metadata.originalIsRead;
             sessionBook.originalLastReadDate = metadata.originalLastReadDate;
             sessionBook.originalIsFavorite = metadata.originalIsFavorite;
@@ -1017,7 +1030,7 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
     }
     
     // Always update cache with both current and original values
-    if (cacheManager) {
+    if (cacheManager && !metadata.uuid.empty()) {
         cacheManager->updateCache(metadata);
     }
     
