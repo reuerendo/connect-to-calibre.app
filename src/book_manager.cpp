@@ -8,32 +8,16 @@
 #include <algorithm>
 #include <iostream>
 #include <cctype>
-#include <regex>
 
 #define LOG_MSG(fmt, ...) { FILE* f = fopen("/mnt/ext1/system/calibre-connect.log", "a"); if(f) { fprintf(f, "[DB] " fmt "\n", ##__VA_ARGS__); fclose(f); } }
 
+// Helper to format Unix timestamp to ISO 8601 (for Calibre)
 static std::string formatIsoTime(time_t timestamp) {
     if (timestamp == 0) return "1970-01-01T00:00:00+00:00";
     char buffer[32];
     struct tm* tm_info = gmtime(&timestamp);
     strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S+00:00", tm_info);
     return std::string(buffer);
-}
-
-static time_t parseIsoTime(const std::string& isoTime) {
-    if (isoTime.empty()) return 0;
-    int y, m, d, H, M, S;
-    if (sscanf(isoTime.c_str(), "%d-%d-%dT%d:%d:%d", &y, &m, &d, &H, &M, &S) >= 6) {
-        struct tm tm = {0};
-        tm.tm_year = y - 1900;
-        tm.tm_mon = m - 1;
-        tm.tm_mday = d;
-        tm.tm_hour = H;
-        tm.tm_min = M;
-        tm.tm_sec = S;
-        return timegm(&tm);
-    }
-    return 0;
 }
 
 BookManager::BookManager() {
@@ -45,16 +29,6 @@ BookManager::~BookManager() {
 
 bool BookManager::initialize(const std::string& dbPath) {
     return true;
-}
-
-std::string BookManager::getBookFilePath(const std::string& lpath) {
-    if (lpath.empty()) return "";
-    std::string cleanLpath = (lpath[0] == '/') ? lpath.substr(1) : lpath;
-    if (!booksDir.empty() && booksDir.back() == '/') {
-        return booksDir + cleanLpath;
-    } else {
-        return booksDir + "/" + cleanLpath;
-    }
 }
 
 sqlite3* BookManager::openDB() {
@@ -80,25 +54,22 @@ int BookManager::getStorageId(const std::string& filename) {
 
 std::string BookManager::getFirstLetter(const std::string& str) {
     if (str.empty()) return "";
+    
     unsigned char first = (unsigned char)str[0];
+    
     if (isalnum(first) || ispunct(first)) {
         char upper = toupper(first);
         return std::string(1, upper);
     }
+    
     std::string res = str.substr(0, 2);
     for (char & c : res) c = toupper((unsigned char)c);
     return res;
 }
 
-int BookManager::getCurrentProfileId() {
-    sqlite3* db = openDB();
-    if (!db) return 1;
-    
-    char* profileName = GetCurrentProfile(); // InkView API
-    if (!profileName) {
-        closeDB(db);
-        return 1;
-    }
+int BookManager::getCurrentProfileId(sqlite3* db) {
+    char* profileName = GetCurrentProfile();
+    if (!profileName) return 1; 
 
     sqlite3_stmt* stmt;
     const char* sql = "SELECT id FROM profiles WHERE name = ?";
@@ -113,16 +84,45 @@ int BookManager::getCurrentProfileId() {
     }
     
     if (profileName) free(profileName);
-    closeDB(db);
     return id;
 }
 
-bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadata& metadata, int profileId) {
+int BookManager::getOrCreateFolder(sqlite3* db, const std::string& folderPath, int storageId) {
+    int folderId = -1;
+    const char* insertSql = "INSERT INTO folders (storageid, name) VALUES (?, ?) "
+                            "ON CONFLICT(storageid, name) DO NOTHING";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, insertSql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, storageId);
+        sqlite3_bind_text(stmt, 2, folderPath.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
 
+    const char* selectSql = "SELECT id FROM folders WHERE storageid = ? AND name = ?";
+    if (sqlite3_prepare_v2(db, selectSql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, storageId);
+        sqlite3_bind_text(stmt, 2, folderPath.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            folderId = sqlite3_column_int(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+    return folderId;
+}
+
+std::string BookManager::getBookFilePath(const std::string& lpath) {
+    if (lpath.empty()) return "";
+    std::string cleanLpath = (lpath[0] == '/') ? lpath.substr(1) : lpath;
+    if (booksDir.back() == '/') return booksDir + cleanLpath;
+    else return booksDir + "/" + cleanLpath;
+}
+
+bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadata& metadata, int profileId) {
     int completed = metadata.isRead ? 1 : 0;
     int favorite = metadata.isFavorite ? 1 : 0;
     
-    // Parse completion date
+    // Parse read completion date
     time_t completedTs = 0;
     if (metadata.isRead && !metadata.lastReadDate.empty()) {
         int y, m, d, H, M, S;
@@ -153,7 +153,7 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
 
     if (exists) {
         if (metadata.isRead) {
-            // Book marked as READ - set progress to 100%
+            // Book is READ: set progress to 100%
             const char* updateSql = 
                 "UPDATE books_settings "
                 "SET completed = ?, favorite = ?, completed_ts = ?, cpage = ?, npage = ? "
@@ -172,7 +172,7 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
                 sqlite3_finalize(stmt);
             }
         } else {
-            // Book NOT read - update status but keep progress
+            // Book is NOT read: preserve reading progress
             const char* updateSql = 
                 "UPDATE books_settings "
                 "SET completed = ?, favorite = ?, completed_ts = ? "
@@ -190,7 +190,7 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
             }
         }
     } else {
-        // Insert new record
+        // New record
         int initialCpage = metadata.isRead ? 100 : 0;
         int initialNpage = metadata.isRead ? 100 : 0;
 
@@ -353,7 +353,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     }
 
     if (bookId != -1) {
-        int profileId = getCurrentProfileId();
+        int profileId = getCurrentProfileId(db);
         processBookSettings(db, bookId, metadata, profileId);
     }
 
@@ -378,7 +378,7 @@ bool BookManager::updateBookSync(const BookMetadata& metadata) {
 
     sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
 
-    int profileId = getCurrentProfileId();
+    int profileId = getCurrentProfileId(db);
     bool res = processBookSettings(db, bookId, metadata, profileId);
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
@@ -388,144 +388,80 @@ bool BookManager::updateBookSync(const BookMetadata& metadata) {
     return res;
 }
 
-int BookManager::findBookIdByPath(sqlite3* db, const std::string& lpath) {
-    std::string fullPath = getBookFilePath(lpath);
-    std::string folderName, fileName;
+bool BookManager::updateBook(const BookMetadata& metadata) {
+    return addBook(metadata);
+}
+
+bool BookManager::deleteBook(const std::string& lpath) {
+    std::string filePath = getBookFilePath(lpath);
+    LOG_MSG("Deleting book: %s", filePath.c_str());
     
-    size_t lastSlash = fullPath.find_last_of('/');
+    remove(filePath.c_str());
+
+    sqlite3* db = openDB();
+    if (!db) return false;
+
+    std::string folderName, fileName;
+    size_t lastSlash = filePath.find_last_of('/');
     if (lastSlash == std::string::npos) {
         folderName = "";
-        fileName = fullPath;
+        fileName = filePath;
     } else {
-        folderName = fullPath.substr(0, lastSlash);
-        fileName = fullPath.substr(lastSlash + 1);
+        folderName = filePath.substr(0, lastSlash);
+        fileName = filePath.substr(lastSlash + 1);
     }
     
-    const char* sql = 
-        "SELECT f.book_id FROM files f "
+    int storageId = getStorageId(filePath);
+
+    sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
+
+    const char* findSql = 
+        "SELECT f.id, f.book_id FROM files f "
         "JOIN folders fo ON f.folder_id = fo.id "
-        "WHERE f.filename = ? AND fo.name = ?";
+        "WHERE f.filename = ? AND fo.name = ? AND f.storageid = ?";
         
     sqlite3_stmt* stmt;
+    int fileId = -1;
     int bookId = -1;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+
+    if (sqlite3_prepare_v2(db, findSql, -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, fileName.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 2, folderName.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 3, storageId);
+        
         if (sqlite3_step(stmt) == SQLITE_ROW) {
-            bookId = sqlite3_column_int(stmt, 0);
+            fileId = sqlite3_column_int(stmt, 0);
+            bookId = sqlite3_column_int(stmt, 1);
         }
         sqlite3_finalize(stmt);
     }
-    return bookId;
-}
 
-int BookManager::getOrCreateBookshelf(sqlite3* db, const std::string& name) {
-    int shelfId = -1;
-    time_t now = time(NULL);
-    
-    const char* findSql = "SELECT id FROM bookshelfs WHERE name = ?";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db, findSql, -1, &stmt, nullptr) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            shelfId = sqlite3_column_int(stmt, 0);
-            const char* restoreSql = "UPDATE bookshelfs SET is_deleted = 0, ts = ? WHERE id = ?";
-            sqlite3_stmt* stmt2;
-            if (sqlite3_prepare_v2(db, restoreSql, -1, &stmt2, nullptr) == SQLITE_OK) {
-                sqlite3_bind_int64(stmt2, 1, now);
-                sqlite3_bind_int(stmt2, 2, shelfId);
-                sqlite3_step(stmt2);
-                sqlite3_finalize(stmt2);
-            }
-        }
-        sqlite3_finalize(stmt);
-    }
-    
-    if (shelfId == -1) {
-        const char* insertSql = "INSERT INTO bookshelfs (name, is_deleted, ts, uuid) VALUES (?, 0, ?, NULL)";
-        if (sqlite3_prepare_v2(db, insertSql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int64(stmt, 2, now);
-            if (sqlite3_step(stmt) == SQLITE_DONE) shelfId = sqlite3_last_insert_rowid(db);
-            sqlite3_finalize(stmt);
-        }
-    }
-    return shelfId;
-}
-
-void BookManager::linkBookToShelf(sqlite3* db, int shelfId, int bookId) {
-    time_t now = time(NULL);
-    const char* checkSql = "SELECT 1 FROM bookshelfs_books WHERE bookshelfid = ? AND bookid = ?";
-    bool exists = false;
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db, checkSql, -1, &stmt, nullptr) == SQLITE_OK) {
-        sqlite3_bind_int(stmt, 1, shelfId);
-        sqlite3_bind_int(stmt, 2, bookId);
-        if (sqlite3_step(stmt) == SQLITE_ROW) exists = true;
-        sqlite3_finalize(stmt);
-    }
-    
-    if (exists) {
-        const char* updateSql = "UPDATE bookshelfs_books SET is_deleted = 0, ts = ? WHERE bookshelfid = ? AND bookid = ?";
-        if (sqlite3_prepare_v2(db, updateSql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, now);
-            sqlite3_bind_int(stmt, 2, shelfId);
-            sqlite3_bind_int(stmt, 3, bookId);
+    if (fileId != -1) {
+        const char* sql1 = "DELETE FROM files WHERE id = ?";
+        if (sqlite3_prepare_v2(db, sql1, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int(stmt, 1, fileId);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
-    } else {
-        const char* insertSql = "INSERT INTO bookshelfs_books (bookshelfid, bookid, ts, is_deleted) VALUES (?, ?, ?, 0)";
-        if (sqlite3_prepare_v2(db, insertSql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt, 1, shelfId);
-            sqlite3_bind_int(stmt, 2, bookId);
-            sqlite3_bind_int64(stmt, 3, now);
+        const char* sql2 = "DELETE FROM books_settings WHERE bookid = ?";
+        if (sqlite3_prepare_v2(db, sql2, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int(stmt, 1, bookId);
+            sqlite3_step(stmt);
+            sqlite3_finalize(stmt);
+        }
+        const char* sql3 = "DELETE FROM books_impl WHERE id = ?";
+        if (sqlite3_prepare_v2(db, sql3, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int(stmt, 1, bookId);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
     }
-}
 
-static std::string cleanCollectionName(const std::string& rawName) {
-    static const std::regex re(R"((.*)\s+\(.*\)$)"); 
-    std::smatch match;
-    if (std::regex_match(rawName, match, re)) {
-        if (match.size() > 1) {
-            return match[1].str();
-        }
-    }
-    return rawName;
-}
-
-void BookManager::updateCollections(const std::map<std::string, std::vector<std::string>>& collections) {
-    sqlite3* db = openDB();
-    if (!db) return;
-    
-    sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
-    
-    for (auto const& entry : collections) {
-        std::string rawName = entry.first;
-        std::string cleanName = cleanCollectionName(rawName);
-        
-        LOG_MSG("Syncing Collection: '%s' -> '%s'", rawName.c_str(), cleanName.c_str());
-        
-        int shelfId = getOrCreateBookshelf(db, cleanName);
-        if (shelfId == -1) continue;
-        
-        for (const std::string& lpath : entry.second) {
-            int bookId = findBookIdByPath(db, lpath);
-            if (bookId != -1) {
-                linkBookToShelf(db, shelfId, bookId);
-            } else {
-                 LOG_MSG("Book not found for collection: %s", lpath.c_str());
-            }
-        }
-    }
-    
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
     sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
+    
     closeDB(db);
+    return true;
 }
 
 std::vector<BookMetadata> BookManager::getAllBooks() {
@@ -533,7 +469,7 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
     sqlite3* db = openDB();
     if (!db) return books;
 
-    int profileId = getCurrentProfileId();
+    int profileId = getCurrentProfileId(db);
     
     std::string sql = 
         "SELECT b.id, b.title, b.author, b.series, b.numinseries, b.size, b.updated, "
@@ -599,267 +535,100 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
     return books;
 }
 
-bool BookManager::updateBook(const BookMetadata& metadata) {
-    return addBook(metadata);
-}
-
-bool BookManager::deleteBook(const std::string& lpath) {
-    return true;
-}
-
 int BookManager::getBookCount() {
     return getAllBooks().size();
 }
 
-// Add these implementations to book_manager.cpp
-
-bool BookManager::getBookMetadata(const std::string& lpath, BookMetadata& outMetadata) {
+int BookManager::findBookIdByPath(sqlite3* db, const std::string& lpath) {
+    std::string fullPath = getBookFilePath(lpath);
+    std::string folderName, fileName;
+    
+    size_t lastSlash = fullPath.find_last_of('/');
+    if (lastSlash == std::string::npos) {
+        folderName = "";
+        fileName = fullPath;
+    } else {
+        folderName = fullPath.substr(0, lastSlash);
+        fileName = fullPath.substr(lastSlash + 1);
+    }
+    
+    const char* sql = "SELECT f.book_id FROM files f JOIN folders fo ON f.folder_id = fo.id WHERE f.filename = ? AND fo.name = ?";
     sqlite3_stmt* stmt;
-    
-    const char* sql = R"(
-        SELECT b.id, f.filename, fo.name, b.title, b.author, b.series, 
-               b.numinseries, b.size, b.updated,
-               bs.completed, bs.completed_ts, bs.favorite
-        FROM books_impl b
-        JOIN files f ON b.id = f.book_id
-        JOIN folders fo ON f.folder_id = fo.id
-        LEFT JOIN books_settings bs ON b.id = bs.bookid AND bs.profileid = ?
-        WHERE fo.name || '/' || f.filename = ?
-    )";
-    
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return false;
-    }
-    
-    int profileId = getCurrentProfileId();
-    sqlite3_bind_int(stmt, 1, profileId);
-    sqlite3_bind_text(stmt, 2, lpath.c_str(), -1, SQLITE_STATIC);
-    
-    bool found = false;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        outMetadata.lpath = lpath;
-        outMetadata.title = getString(stmt, 3);
-        outMetadata.authors = getString(stmt, 4);
-        outMetadata.series = getString(stmt, 5);
-        outMetadata.seriesIndex = sqlite3_column_int(stmt, 6);
-        outMetadata.size = sqlite3_column_int64(stmt, 7);
-        
-        // Format last_modified as ISO timestamp
-        time_t updateTime = sqlite3_column_int64(stmt, 8);
-        char timeBuf[32];
-        strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%dT%H:%M:%S+00:00", gmtime(&updateTime));
-        outMetadata.lastModified = timeBuf;
-        
-        // Read status
-        if (sqlite3_column_type(stmt, 9) != SQLITE_NULL) {
-            outMetadata.isRead = sqlite3_column_int(stmt, 9) == 1;
-        }
-        
-        // Read date
-        if (sqlite3_column_type(stmt, 10) != SQLITE_NULL) {
-            time_t readTime = sqlite3_column_int64(stmt, 10);
-            if (readTime > 0) {
-                char readBuf[32];
-                strftime(readBuf, sizeof(readBuf), "%Y-%m-%dT%H:%M:%S+00:00", gmtime(&readTime));
-                outMetadata.lastReadDate = readBuf;
-            }
-        }
-        
-        // Favorite status
-        if (sqlite3_column_type(stmt, 11) != SQLITE_NULL) {
-            outMetadata.isFavorite = sqlite3_column_int(stmt, 11) == 1;
-        }
-        
-        found = true;
-    }
-    
-    sqlite3_finalize(stmt);
-    return found;
-}
-
-std::map<std::string, std::set<std::string>> BookManager::getCollections() {
-    std::map<std::string, std::set<std::string>> collections;
-    sqlite3_stmt* stmt;
-    
-    const char* sql = R"(
-        SELECT bs.name, fo.name || '/' || f.filename as lpath
-        FROM bookshelfs bs
-        JOIN bookshelfs_books bb ON bs.id = bb.bookshelfid
-        JOIN books_impl b ON bb.bookid = b.id
-        JOIN files f ON b.id = f.book_id
-        JOIN folders fo ON f.folder_id = fo.id
-        WHERE bs.is_deleted = 0 AND bb.is_deleted = 0
-    )";
-    
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return collections;
-    }
-    
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        std::string collName = getString(stmt, 0);
-        std::string lpath = getString(stmt, 1);
-        collections[collName].insert(lpath);
-    }
-    
-    sqlite3_finalize(stmt);
-    return collections;
-}
-
-void BookManager::removeFromCollection(const std::string& lpath, const std::string& collectionName) {
-    sqlite3_stmt* stmt;
-    
-    // Find book_id and bookshelf_id
-    const char* findSql = R"(
-        SELECT b.id, bs.id
-        FROM books_impl b
-        JOIN files f ON b.id = f.book_id
-        JOIN folders fo ON f.folder_id = fo.id
-        CROSS JOIN bookshelfs bs
-        WHERE fo.name || '/' || f.filename = ?
-          AND bs.name = ?
-          AND bs.is_deleted = 0
-    )";
-    
-    if (sqlite3_prepare_v2(db, findSql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return;
-    }
-    
-    sqlite3_bind_text(stmt, 1, lpath.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 2, collectionName.c_str(), -1, SQLITE_STATIC);
-    
     int bookId = -1;
-    int bookshelfId = -1;
     
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        bookId = sqlite3_column_int(stmt, 0);
-        bookshelfId = sqlite3_column_int(stmt, 1);
-    }
-    sqlite3_finalize(stmt);
-    
-    if (bookId < 0 || bookshelfId < 0) return;
-    
-    // Mark link as deleted
-    const char* updateSql = R"(
-        UPDATE bookshelfs_books 
-        SET is_deleted = 1, ts = ?
-        WHERE bookshelfid = ? AND bookid = ?
-    )";
-    
-    if (sqlite3_prepare_v2(db, updateSql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return;
-    }
-    
-    time_t now = time(nullptr);
-    sqlite3_bind_int64(stmt, 1, now);
-    sqlite3_bind_int(stmt, 2, bookshelfId);
-    sqlite3_bind_int(stmt, 3, bookId);
-    
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-}
-
-void BookManager::addToCollection(const std::string& lpath, const std::string& collectionName) {
-    sqlite3_stmt* stmt;
-    
-    // Find book_id
-    const char* findBookSql = R"(
-        SELECT b.id
-        FROM books_impl b
-        JOIN files f ON b.id = f.book_id
-        JOIN folders fo ON f.folder_id = fo.id
-        WHERE fo.name || '/' || f.filename = ?
-    )";
-    
-    if (sqlite3_prepare_v2(db, findBookSql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return;
-    }
-    
-    sqlite3_bind_text(stmt, 1, lpath.c_str(), -1, SQLITE_STATIC);
-    
-    int bookId = -1;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        bookId = sqlite3_column_int(stmt, 0);
-    }
-    sqlite3_finalize(stmt);
-    
-    if (bookId < 0) return;
-    
-    // Get or create bookshelf
-    const char* findShelfSql = "SELECT id FROM bookshelfs WHERE name = ?";
-    if (sqlite3_prepare_v2(db, findShelfSql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return;
-    }
-    
-    sqlite3_bind_text(stmt, 1, collectionName.c_str(), -1, SQLITE_STATIC);
-    
-    int bookshelfId = -1;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        bookshelfId = sqlite3_column_int(stmt, 0);
-    }
-    sqlite3_finalize(stmt);
-    
-    time_t now = time(nullptr);
-    
-    if (bookshelfId < 0) {
-        // Create new bookshelf
-        const char* createSql = "INSERT INTO bookshelfs (name, is_deleted, ts) VALUES (?, 0, ?)";
-        if (sqlite3_prepare_v2(db, createSql, -1, &stmt, nullptr) != SQLITE_OK) {
-            return;
-        }
-        
-        sqlite3_bind_text(stmt, 1, collectionName.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_int64(stmt, 2, now);
-        
-        if (sqlite3_step(stmt) == SQLITE_DONE) {
-            bookshelfId = sqlite3_last_insert_rowid(db);
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, fileName.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, folderName.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            bookId = sqlite3_column_int(stmt, 0);
         }
         sqlite3_finalize(stmt);
-    } else {
-        // Reactivate if deleted
-        const char* reactivateSql = "UPDATE bookshelfs SET is_deleted = 0, ts = ? WHERE id = ?";
-        if (sqlite3_prepare_v2(db, reactivateSql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, now);
-            sqlite3_bind_int(stmt, 2, bookshelfId);
-            sqlite3_step(stmt);
+    }
+    return bookId;
+}
+
+int BookManager::getOrCreateBookshelf(sqlite3* db, const std::string& name) {
+    int shelfId = -1;
+    time_t now = time(NULL);
+    
+    const char* findSql = "SELECT id FROM bookshelfs WHERE name = ?";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, findSql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            shelfId = sqlite3_column_int(stmt, 0);
+            const char* restoreSql = "UPDATE bookshelfs SET is_deleted = 0, ts = ? WHERE id = ?";
+            sqlite3_stmt* stmt2;
+            if (sqlite3_prepare_v2(db, restoreSql, -1, &stmt2, nullptr) == SQLITE_OK) {
+                sqlite3_bind_int64(stmt2, 1, now);
+                sqlite3_bind_int(stmt2, 2, shelfId);
+                sqlite3_step(stmt2);
+                sqlite3_finalize(stmt2);
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+    
+    if (shelfId == -1) {
+        const char* insertSql = "INSERT INTO bookshelfs (name, is_deleted, ts) VALUES (?, 0, ?)";
+        if (sqlite3_prepare_v2(db, insertSql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 2, now);
+            if (sqlite3_step(stmt) == SQLITE_DONE) {
+                shelfId = sqlite3_last_insert_rowid(db);
+            }
             sqlite3_finalize(stmt);
         }
     }
+    return shelfId;
+}
+
+void BookManager::linkBookToShelf(sqlite3* db, int shelfId, int bookId) {
+    time_t now = time(NULL);
     
-    if (bookshelfId < 0) return;
-    
-    // Check if link exists
-    const char* checkLinkSql = "SELECT is_deleted FROM bookshelfs_books WHERE bookshelfid = ? AND bookid = ?";
-    if (sqlite3_prepare_v2(db, checkLinkSql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return;
+    const char* checkSql = "SELECT 1 FROM bookshelfs_books WHERE bookshelfid = ? AND bookid = ?";
+    bool exists = false;
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, checkSql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, shelfId);
+        sqlite3_bind_int(stmt, 2, bookId);
+        if (sqlite3_step(stmt) == SQLITE_ROW) exists = true;
+        sqlite3_finalize(stmt);
     }
     
-    sqlite3_bind_int(stmt, 1, bookshelfId);
-    sqlite3_bind_int(stmt, 2, bookId);
-    
-    bool linkExists = false;
-    bool isDeleted = false;
-    
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        linkExists = true;
-        isDeleted = sqlite3_column_int(stmt, 0) == 1;
-    }
-    sqlite3_finalize(stmt);
-    
-    if (linkExists && isDeleted) {
-        // Reactivate link
+    if (exists) {
         const char* updateSql = "UPDATE bookshelfs_books SET is_deleted = 0, ts = ? WHERE bookshelfid = ? AND bookid = ?";
         if (sqlite3_prepare_v2(db, updateSql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(stmt, 1, now);
-            sqlite3_bind_int(stmt, 2, bookshelfId);
+            sqlite3_bind_int(stmt, 2, shelfId);
             sqlite3_bind_int(stmt, 3, bookId);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
-    } else if (!linkExists) {
-        // Create new link
+    } else {
         const char* insertSql = "INSERT INTO bookshelfs_books (bookshelfid, bookid, ts, is_deleted) VALUES (?, ?, ?, 0)";
         if (sqlite3_prepare_v2(db, insertSql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt, 1, bookshelfId);
+            sqlite3_bind_int(stmt, 1, shelfId);
             sqlite3_bind_int(stmt, 2, bookId);
             sqlite3_bind_int64(stmt, 3, now);
             sqlite3_step(stmt);
@@ -868,19 +637,31 @@ void BookManager::addToCollection(const std::string& lpath, const std::string& c
     }
 }
 
-void BookManager::removeCollection(const std::string& collectionName) {
-    sqlite3_stmt* stmt;
+void BookManager::updateCollections(const std::map<std::string, std::vector<std::string>>& collections) {
+    sqlite3* db = openDB();
+    if (!db) return;
     
-    const char* sql = "UPDATE bookshelfs SET is_deleted = 1, ts = ? WHERE name = ?";
+    sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
     
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return;
+    for (auto const& entry : collections) {
+        const std::string& colName = entry.first;
+        const std::vector<std::string>& lpaths = entry.second;
+        
+        LOG_MSG("Processing collection: %s with %d books", colName.c_str(), (int)lpaths.size());
+        
+        int shelfId = getOrCreateBookshelf(db, colName);
+        if (shelfId == -1) continue;
+        
+        for (const std::string& lpath : lpaths) {
+            int bookId = findBookIdByPath(db, lpath);
+            if (bookId != -1) {
+                linkBookToShelf(db, shelfId, bookId);
+            } else {
+                LOG_MSG("Book not found for collection: %s", lpath.c_str());
+            }
+        }
     }
     
-    time_t now = time(nullptr);
-    sqlite3_bind_int64(stmt, 1, now);
-    sqlite3_bind_text(stmt, 2, collectionName.c_str(), -1, SQLITE_STATIC);
-    
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+    closeDB(db);
 }
