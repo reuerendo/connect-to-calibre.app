@@ -102,9 +102,8 @@ bool CacheManager::loadCache() {
     
     int loaded = 0;
     
-    // Iterate through cache entries
     json_object_object_foreach(root, key, val) {
-        (void)key; // Silences the "unused variable" warning
+        (void)key;
         
         json_object* bookObj = NULL;
         json_object* lastUsedObj = NULL;
@@ -116,7 +115,6 @@ bool CacheManager::loadCache() {
         
         BookMetadata metadata;
         
-        // Parse book metadata
         json_object* tmp = NULL;
         if (json_object_object_get_ex(bookObj, "uuid", &tmp)) {
             const char* str = json_object_get_string(tmp);
@@ -139,7 +137,7 @@ bool CacheManager::loadCache() {
             metadata.lastModified = str ? str : "";
         }
         
-        // Parse sync fields
+        // Current sync fields
         if (json_object_object_get_ex(bookObj, "_is_read_", &tmp)) {
             metadata.isRead = json_object_get_boolean(tmp);
         }
@@ -151,10 +149,22 @@ bool CacheManager::loadCache() {
             metadata.isFavorite = json_object_get_boolean(tmp);
         }
         
+        // NEW: Load original values from cache
+        if (json_object_object_get_ex(bookObj, "_original_is_read_", &tmp)) {
+            metadata.originalIsRead = json_object_get_boolean(tmp);
+            metadata.hasOriginalValues = true;
+        }
+        if (json_object_object_get_ex(bookObj, "_original_last_read_date_", &tmp)) {
+            const char* str = json_object_get_string(tmp);
+            metadata.originalLastReadDate = str ? str : "";
+        }
+        if (json_object_object_get_ex(bookObj, "_original_is_favorite_", &tmp)) {
+            metadata.originalIsFavorite = json_object_get_boolean(tmp);
+        }
+        
         const char* lastUsedStr = json_object_get_string(lastUsedObj);
         std::string lastUsed = lastUsedStr ? lastUsedStr : "";
         
-        // Store using lpath as key
         if (!metadata.lpath.empty()) {
             cacheData[metadata.lpath] = CacheEntry(metadata, lastUsed);
             loaded++;
@@ -170,7 +180,6 @@ bool CacheManager::loadCache() {
 bool CacheManager::saveCache() {
     LOG_CACHE("Saving cache with %d entries", (int)cacheData.size());
     
-    // Purge old entries before saving
     purgeOldEntries(30);
     
     json_object* root = json_object_new_object();
@@ -181,22 +190,32 @@ bool CacheManager::saveCache() {
         
         const BookMetadata& meta = entry.second.metadata;
         
-        // Use lpath as the key for JSON
         std::string jsonKey = meta.lpath; 
         
-        // Add book fields
         json_object_object_add(bookObj, "uuid", json_object_new_string(meta.uuid.c_str()));
         json_object_object_add(bookObj, "title", json_object_new_string(meta.title.c_str()));
         json_object_object_add(bookObj, "authors", json_object_new_string(meta.authors.c_str()));
         json_object_object_add(bookObj, "lpath", json_object_new_string(meta.lpath.c_str()));
         json_object_object_add(bookObj, "last_modified", json_object_new_string(meta.lastModified.c_str()));
         
-        // Add sync fields
+        // Current sync fields
         json_object_object_add(bookObj, "_is_read_", json_object_new_boolean(meta.isRead));
         if (!meta.lastReadDate.empty()) {
             json_object_object_add(bookObj, "_last_read_date_", json_object_new_string(meta.lastReadDate.c_str()));
         }
         json_object_object_add(bookObj, "_is_favorite_", json_object_new_boolean(meta.isFavorite));
+        
+        // NEW: Save original values to cache
+        if (meta.hasOriginalValues) {
+            json_object_object_add(bookObj, "_original_is_read_", 
+                                  json_object_new_boolean(meta.originalIsRead));
+            if (!meta.originalLastReadDate.empty()) {
+                json_object_object_add(bookObj, "_original_last_read_date_", 
+                                      json_object_new_string(meta.originalLastReadDate.c_str()));
+            }
+            json_object_object_add(bookObj, "_original_is_favorite_", 
+                                  json_object_new_boolean(meta.originalIsFavorite));
+        }
         
         json_object_object_add(entryObj, "book", bookObj);
         json_object_object_add(entryObj, "last_used", json_object_new_string(entry.second.lastUsed.c_str()));
@@ -213,7 +232,6 @@ bool CacheManager::saveCache() {
         return false;
     }
     
-    // Now valid because <cstring> is included
     fwrite(jsonStr, 1, strlen(jsonStr), f);
     fclose(f);
     

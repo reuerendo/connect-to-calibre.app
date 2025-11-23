@@ -483,7 +483,7 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
     
     std::string sql = 
         "SELECT b.id, b.title, b.author, b.series, b.numinseries, b.size, b.updated, "
-        "f.filename, fo.name, bs.completed, bs.favorite, bs.completed_ts "
+        "f.filename, fo.name, bs.completed, bs.favorite, bs.completed_ts, f.modification_time "
         "FROM books_impl b "
         "JOIN files f ON b.id = f.book_id "
         "JOIN folders fo ON f.folder_id = fo.id "
@@ -523,6 +523,7 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
                 meta.lpath = fName;
             }
             
+            // Current device state
             meta.isRead = (sqlite3_column_int(stmt, 9) != 0);
             meta.isFavorite = (sqlite3_column_int(stmt, 10) != 0);
             
@@ -531,10 +532,22 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
                 meta.lastReadDate = formatIsoTime(readTs);
             }
             
-            time_t updated = (time_t)sqlite3_column_int64(stmt, 6);
-            meta.lastModified = formatIsoTime(updated);
+            time_t fileModTime = (time_t)sqlite3_column_int64(stmt, 12);
+            if (fileModTime > 0) {
+                meta.lastModified = formatIsoTime(fileModTime);
+            } else {
+                time_t updated = (time_t)sqlite3_column_int64(stmt, 6);
+                meta.lastModified = formatIsoTime(updated);
+            }
 
-            meta.uuid = ""; 
+            meta.uuid = "";
+            
+            // NEW: Initialize original values as same as current
+            // These will be overwritten by Calibre during SEND_BOOK_METADATA
+            meta.originalIsRead = meta.isRead;
+            meta.originalLastReadDate = meta.lastReadDate;
+            meta.originalIsFavorite = meta.isFavorite;
+            meta.hasOriginalValues = false;
 
             books.push_back(meta);
         }

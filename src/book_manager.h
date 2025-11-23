@@ -11,7 +11,7 @@ struct BookMetadata {
     std::string uuid;
     std::string title;
     std::string authors;
-    std::string authorSort; // Поле для сортировки (pb-db.lua)
+    std::string authorSort;
     std::string lpath;
     std::string series;
     int seriesIndex;
@@ -26,15 +26,21 @@ struct BookMetadata {
     int thumbnailWidth;
     std::string isbn;
     
-    // Sync fields
     bool isRead;
     std::string lastReadDate;
     bool isFavorite;
     
+    bool originalIsRead;
+    std::string originalLastReadDate;
+    bool originalIsFavorite;
+    bool hasOriginalValues;
+    
     int dbBookId; 
     
     BookMetadata() : seriesIndex(0), size(0), thumbnailHeight(0), 
-                     thumbnailWidth(0), isRead(false), isFavorite(false), dbBookId(-1) {}
+                     thumbnailWidth(0), isRead(false), isFavorite(false),
+                     originalIsRead(false), originalIsFavorite(false),
+                     hasOriginalValues(false), dbBookId(-1) {}
 };
 
 class BookManager {
