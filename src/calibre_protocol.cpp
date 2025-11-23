@@ -145,7 +145,10 @@ json_object* CalibreProtocol::createDeviceInfo() {
     
     json_object_object_add(info, "appName", json_object_new_string("PocketBook Calibre Companion"));
     json_object_object_add(info, "acceptedExtensions", extensions);
+    
+    // NEW: Always use lpaths for cache keys (matches driver's current implementation)
     json_object_object_add(info, "cacheUsesLpaths", json_object_new_boolean(true));
+    
     json_object_object_add(info, "canAcceptLibraryInfo", json_object_new_boolean(true));
     json_object_object_add(info, "canDeleteMultipleBooks", json_object_new_boolean(true));
     json_object_object_add(info, "canReceiveBookBinary", json_object_new_boolean(true));
@@ -249,12 +252,14 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
         uuid = ReadString(GetGlobalConfig(), "calibre_device_uuid", "");
     }
     
-    // Store device UUID for cache manager
     deviceUuid = uuid;
     
     // Initialize cache with device UUID
     if (cacheManager) {
         cacheManager->initialize(deviceUuid);
+        // NEW: Set cache strategy to match driver (always use lpaths)
+        cacheManager->setCacheUsesLpaths(true);
+        logProto("Cache strategy set to: uses_lpaths=true");
     }
     
     json_object_object_add(deviceData, "device_store_uuid", 
