@@ -111,6 +111,7 @@ static pthread_mutex_t bookCountMutex = PTHREAD_MUTEX_INITIALIZER;
 static int pendingBookCount = 0;
 static bool bookCountTimerActive = false;
 static int booksReceivedCount = 0;
+static bool syncMessageShown = false;
 
 // Forward declarations
 int mainEventHandler(int type, int par1, int par2);
@@ -122,7 +123,7 @@ static iconfigedit configItems[] = {
     {
         CFG_IPADDR,
         NULL,
-        (char *)"    IP Address",
+        (char *)"     IP Address",
         NULL,
         (char *)KEY_IP,
         (char *)DEFAULT_IP,
@@ -132,7 +133,7 @@ static iconfigedit configItems[] = {
     {
         CFG_NUMBER,
         NULL,
-        (char *)"    Port",
+        (char *)"     Port",
         NULL,
         (char *)KEY_PORT,
         (char *)DEFAULT_PORT,
@@ -142,7 +143,7 @@ static iconfigedit configItems[] = {
     {
         CFG_PASSWORD,
         NULL,
-        (char *)"    Password",
+        (char *)"     Password",
         NULL,
         (char *)KEY_PASSWORD,
         (char *)DEFAULT_PASSWORD,
@@ -152,7 +153,7 @@ static iconfigedit configItems[] = {
     {
         CFG_TEXT,
         NULL,
-        (char *)"    Read Status Column",
+        (char *)"     Read Status Column",
         NULL,
         (char *)KEY_READ_COLUMN,
         (char *)DEFAULT_READ_COLUMN,
@@ -162,7 +163,7 @@ static iconfigedit configItems[] = {
     {
         CFG_TEXT,
         NULL,
-        (char *)"    Read Date Column",
+        (char *)"     Read Date Column",
         NULL,
         (char *)KEY_READ_DATE_COLUMN,
         (char *)DEFAULT_READ_DATE_COLUMN,
@@ -172,7 +173,7 @@ static iconfigedit configItems[] = {
     {
         CFG_TEXT,
         NULL,
-        (char *)"    Favorite Column",
+        (char *)"     Favorite Column",
         NULL,
         (char *)KEY_FAVORITE_COLUMN,
         (char *)DEFAULT_FAVORITE_COLUMN,
@@ -229,6 +230,9 @@ void* connectionThreadFunc(void* arg) {
     
     logMsg("Connecting to %s:%d", ip, port);
     
+    booksReceivedCount = 0;
+    syncMessageShown = false;
+    
     if (shouldStop) {
         isConnecting = false;
         return NULL;
@@ -260,48 +264,14 @@ void* connectionThreadFunc(void* arg) {
     logMsg("Handshake successful");
     SendEvent(mainEventHandler, EVT_SHOW_TOAST, TOAST_CONNECTED, 0);
     
-    // Reset book count at start of session
-    pthread_mutex_lock(&bookCountMutex);
-    pendingBookCount = 0;
-    bookCountTimerActive = false;
-    pthread_mutex_unlock(&bookCountMutex);
-    
-    // Handle messages with callback that tracks book additions
     protocol->handleMessages([](const std::string& status) {
         if (status == "BOOK_SAVED") {
-            pthread_mutex_lock(&bookCountMutex);
-            
-            if (protocol) {
-                pendingBookCount = protocol->getBooksReceivedCount();
-                logMsg("Book received, pending count: %d", pendingBookCount);
-                
-                // Cancel existing timer if active
-                if (bookCountTimerActive) {
-                    ClearTimer((iv_timerproc)showBookCountMessage);
-                }
-                
-                // Start new 1-second timer
-                SetWeakTimer("BookCountTimer", showBookCountMessage, 1000);
-                bookCountTimerActive = true;
-            }
-            
-            pthread_mutex_unlock(&bookCountMutex);
+            int count = protocol->getBooksReceivedCount();
+            SendEvent(mainEventHandler, EVT_BOOK_RECEIVED, count, 0);
         }
     });
     
     logMsg("Disconnecting");
-    
-    // Show any pending book count before disconnect
-    pthread_mutex_lock(&bookCountMutex);
-    if (bookCountTimerActive) {
-        ClearTimer((iv_timerproc)showBookCountMessage);
-        bookCountTimerActive = false;
-    }
-    if (pendingBookCount > 0) {
-        SendEvent(mainEventHandler, EVT_BOOK_RECEIVED, pendingBookCount, 0);
-        pendingBookCount = 0;
-    }
-    pthread_mutex_unlock(&bookCountMutex);
     
     protocol->disconnect();
     networkManager->disconnect();
@@ -454,7 +424,13 @@ void updateConnectionStatus(const char* status) {
 
 void finalSyncMessageTimer() {
     ClearTimer((iv_timerproc)finalSyncMessageTimer);
+    
+    if (syncMessageShown) {
+        return;
+    }
+    
     logMsg("Timer fired: Batch sync finished");
+    syncMessageShown = true;
     
     char msgBuffer[128];
     snprintf(msgBuffer, sizeof(msgBuffer),
@@ -474,10 +450,7 @@ void performExit() {
     
     exitRequested = true;
     
-    // Clear the start timer if we exit immediately
     ClearTimer((iv_timerproc)connectionTimerFunc);
-    
-    // Clear sync finalization timer
     ClearTimer((iv_timerproc)finalSyncMessageTimer);
     
     stopConnection();
@@ -501,11 +474,7 @@ int mainEventHandler(int type, int par1, int par2) {
             SetPanelType(PANEL_ENABLED);
             initConfig();
             showMainScreen();
-            
-            // Force an initial update to ensure the config screen is drawn
             SoftUpdate();
-            
-            // Schedule the connection start after 300ms to allow UI to render
             SetWeakTimer("ConnectTimer", connectionTimerFunc, 300);
             break;
             
@@ -536,32 +505,22 @@ int mainEventHandler(int type, int par1, int par2) {
         case EVT_BOOK_RECEIVED: {
             int count = par1;
             
-            // Сохраняем глобально, чтобы функция таймера видела актуальное число
             booksReceivedCount = count;
+            syncMessageShown = false;
             
-            // 1. Обновляем статус на экране (тихо, без всплывающего окна)
             char statusBuffer[64];
             snprintf(statusBuffer, sizeof(statusBuffer), "Receiving... (%d book%s)",
                      count, count == 1 ? "" : "s");
             updateConnectionStatus(statusBuffer);
             SoftUpdate();
             
-            // 2. Логика таймера (Debounce)
-            
-            // Сначала УДАЛЯЕМ предыдущий таймер, если он был запущен.
-            // Это отменяет показ сообщения, если новая книга пришла быстрее чем за 1 сек.
             ClearTimer((iv_timerproc)finalSyncMessageTimer);
-            
-            // Теперь ЗАПУСКАЕМ таймер заново на 1000 мс (1 секунда).
-            // Если в течение секунды придет еще книга, этот код выполнится снова,
-            // и таймер снова сбросится.
             SetWeakTimer("SyncFinalize", (iv_timerproc)finalSyncMessageTimer, 1000);
             
             break;
         }
 
         case EVT_SHOW_TOAST:
-            // Handle toast messages ONLY for Connected/Disconnected
             if (par1 == TOAST_CONNECTED) {
                 Message(ICON_INFORMATION, "Calibre", "Connected Successfully", 2000);
                 updateConnectionStatus("Connected (Idle)");
@@ -586,7 +545,6 @@ int mainEventHandler(int type, int par1, int par2) {
             if (!exitRequested) {
                 exitRequested = true;
                 
-                // Clear timers
                 ClearTimer((iv_timerproc)connectionTimerFunc);
                 ClearTimer((iv_timerproc)finalSyncMessageTimer);
                 
