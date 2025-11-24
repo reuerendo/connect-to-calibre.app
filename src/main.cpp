@@ -125,57 +125,57 @@ void initConfigItems() {
     configItems = (iconfigedit*)calloc(7, sizeof(iconfigedit));
     
     configItems[0].type = CFG_IPADDR;
-	NULL,
+	NULL;
     configItems[0].name = strdup(i18n_get(STR_IP_ADDRESS));
-	NULL,
+	NULL;
     configItems[0].key = (char*)KEY_IP;
-    configItems[0].defval = (char*)DEFAULT_IP;
-	NULL,
+    configItems[0].deflt = (char*)DEFAULT_IP;
+	NULL;
 	NULL
     
     configItems[1].type = CFG_NUMBER;
-	NULL,
+	NULL;
     configItems[1].name = strdup(i18n_get(STR_PORT));
-	NULL,
+	NULL;
     configItems[1].key = (char*)KEY_PORT;
-    configItems[1].defval = (char*)DEFAULT_PORT;
-	NULL,
+    configItems[1].deflt = (char*)DEFAULT_PORT;
+	NULL;
 	NULL
     
     configItems[2].type = CFG_PASSWORD;
-	NULL,
+	NULL;
     configItems[2].name = strdup(i18n_get(STR_PASSWORD));
-	NULL,
+	NULL;
     configItems[2].key = (char*)KEY_PASSWORD;
-    configItems[2].defval = (char*)DEFAULT_PASSWORD;
-	NULL,
+    configItems[2].deflt = (char*)DEFAULT_PASSWORD;
+	NULL;
 	NULL
     
     configItems[3].type = CFG_TEXT;
-	NULL,
+	NULL;
     configItems[3].name = strdup(i18n_get(STR_READ_COLUMN));
-	NULL,
+	NULL;
     configItems[3].key = (char*)KEY_READ_COLUMN;
-    configItems[3].defval = (char*)DEFAULT_READ_COLUMN;
-	NULL,
+    configItems[3].deflt = (char*)DEFAULT_READ_COLUMN;
+	NULL;
 	NULL
     
     configItems[4].type = CFG_TEXT;
-	NULL,
+	NULL;
     configItems[4].name = strdup(i18n_get(STR_READ_DATE_COLUMN));
-	NULL,
+	NULL;
     configItems[4].key = (char*)KEY_READ_DATE_COLUMN;
-    configItems[4].defval = (char*)DEFAULT_READ_DATE_COLUMN;
-	NULL,
+    configItems[4].deflt = (char*)DEFAULT_READ_DATE_COLUMN;
+	NULL;
 	NULL
     
     configItems[5].type = CFG_TEXT;
-	NULL,
+	NULL;
     configItems[5].name = strdup(i18n_get(STR_FAVORITE_COLUMN));
-	NULL,
+	NULL;
     configItems[5].key = (char*)KEY_FAVORITE_COLUMN;
-    configItems[5].defval = (char*)DEFAULT_FAVORITE_COLUMN;
-	NULL,
+    configItems[5].deflt = (char*)DEFAULT_FAVORITE_COLUMN;
+	NULL;
 	NULL
     
     {
