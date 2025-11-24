@@ -3,7 +3,7 @@
 
 #include "book_manager.h"
 #include <string>
-#include <map>
+#include <unordered_map> // Оптимизация: HashMap вместо дерева
 #include <vector>
 
 // Cache entry structure matching Calibre's expectations
@@ -55,8 +55,9 @@ private:
     std::string deviceUuid;
     std::string cacheFilePath;
     
+    // Оптимизация: unordered_map для доступа O(1)
     // Key: lpath (file path relative to root), Value: CacheEntry
-    std::map<std::string, CacheEntry> cacheData; 
+    std::unordered_map<std::string, CacheEntry> cacheData; 
     
     // Helper to get current ISO timestamp
     std::string getCurrentTimestamp() const;
