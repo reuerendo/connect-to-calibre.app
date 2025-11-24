@@ -36,9 +36,9 @@ static const char* translations[][STR_COUNT] = {
         "     IP-адрес",                   // STR_IP_ADDRESS
         "     Порт",                       // STR_PORT
         "     Пароль",                     // STR_PASSWORD
-        "     Колонка статуса чтения",     // STR_READ_COLUMN
-        "     Колонка даты чтения",        // STR_READ_DATE_COLUMN
-        "     Колонка избранного",         // STR_FAVORITE_COLUMN
+        "     Столбец статуса чтения",     // STR_READ_COLUMN
+        "     Столбец даты прочтения",        // STR_READ_DATE_COLUMN
+        "     Столбец избранного",         // STR_FAVORITE_COLUMN
         "Ошибка подключения",              // STR_CONNECTION_FAILED
         "Подключено",                      // STR_CONNECTED
         "Отключено",                       // STR_DISCONNECTED
@@ -112,23 +112,29 @@ static const char* translations[][STR_COUNT] = {
 
 static LanguageCode currentLanguage = LANG_ENGLISH;
 
-// Map Pocketbook language codes to our enum
-static LanguageCode mapPocketbookLanguage(int pbLang) {
-    switch (pbLang) {
-        case 2:  // Russian
-            return LANG_RUSSIAN;
-        case 27: // Ukrainian
-            return LANG_UKRAINIAN;
-        case 7:  // Spanish
-            return LANG_SPANISH;
-        default:
-            return LANG_ENGLISH;
+// Map Pocketbook language codes (string) to our enum
+static LanguageCode mapPocketbookLanguage(const char* lang) {
+    if (!lang) {
+        return LANG_ENGLISH;
     }
+    
+    // Check start of string to handle codes like "ru", "ru_RU", etc.
+    if (strncmp(lang, "ru", 2) == 0) {
+        return LANG_RUSSIAN;
+    }
+    if (strncmp(lang, "uk", 2) == 0) {
+        return LANG_UKRAINIAN;
+    }
+    if (strncmp(lang, "es", 2) == 0) {
+        return LANG_SPANISH;
+    }
+    
+    return LANG_ENGLISH;
 }
 
 void i18n_init() {
-    // Get system language from Pocketbook
-    int systemLang = GetLang();
+    // Get system language from Pocketbook (returns const char*, e.g., "ru", "en")
+    const char* systemLang = currentLang();
     currentLanguage = mapPocketbookLanguage(systemLang);
 }
 
