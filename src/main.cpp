@@ -4,13 +4,20 @@
 #include "book_manager.h"
 #include "cache_manager.h"
 #include "i18n.h"
+
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include <pthread.h>
 #include <unistd.h>
 #include <sys/stat.h>
+
+// Modern C++ includes
+#include <thread>
+#include <mutex>
+#include <memory>
+#include <atomic>
+#include <string>
 
 // Custom events
 #define EVT_USER_UPDATE 20001
@@ -24,12 +31,17 @@
 
 #define MAX_LOG_SIZE (256 * 1024)
 
-// Debug logging
+// --- Logging System (Thread Safe) ---
 static FILE* logFile = NULL;
+static std::mutex logMutex; // Mutex for log file access
 
 void initLog() {
     const char* logPath = "/mnt/ext1/system/calibre-connect.log";
     
+    // Lock guard not strictly needed here if called from INIT only, 
+    // but good practice if re-initialized.
+    std::lock_guard<std::mutex> lock(logMutex);
+
     struct stat st;
     if (stat(logPath, &st) == 0) {
         if (st.st_size >= MAX_LOG_SIZE) {
@@ -37,7 +49,8 @@ void initLog() {
         }
     }
 
-    logFile = iv_fopen(logPath, "a");
+    // Using standard fopen for better compatibility across threads
+    logFile = fopen(logPath, "a");
     if (logFile) {
         time_t now = time(NULL);
         fprintf(logFile, "\n= Calibre Connect Started [%s] =\n", ctime(&now));
@@ -46,8 +59,12 @@ void initLog() {
 }
 
 void logMsg(const char* format, ...) {
+    std::lock_guard<std::mutex> lock(logMutex);
+    
     if (!logFile) {
-        initLog(); 
+        // Try to re-open if null, though usually initLog is called first
+        const char* logPath = "/mnt/ext1/system/calibre-connect.log";
+        logFile = fopen(logPath, "a");
         if (!logFile) return;
     }
     
@@ -65,16 +82,17 @@ void logMsg(const char* format, ...) {
 }
 
 void closeLog() {
+    std::lock_guard<std::mutex> lock(logMutex);
     if (logFile) {
         time_t now = time(NULL);
         fprintf(logFile, "= Calibre Connect Closed [%s] =\n", ctime(&now));
         fflush(logFile);
-        iv_fclose(logFile);
+        fclose(logFile);
         logFile = NULL;
     }
 }
 
-// Global config
+// --- Global Config ---
 static iconfig *appConfig = NULL;
 static const char *CONFIG_FILE = "/mnt/ext1/system/config/calibre-connect.cfg";
 
@@ -86,9 +104,6 @@ static const char *KEY_READ_COLUMN = "read_column";
 static const char *KEY_READ_DATE_COLUMN = "read_date_column";
 static const char *KEY_FAVORITE_COLUMN = "favorite_column";
 
-// Global error message buffer
-static char connectionErrorBuffer[256] = "";
-
 // Default values
 static const char *DEFAULT_IP = "192.168.1.100";
 static const char *DEFAULT_PORT = "9090";
@@ -97,103 +112,84 @@ static const char *DEFAULT_READ_COLUMN = "#read";
 static const char *DEFAULT_READ_DATE_COLUMN = "#read_date";
 static const char *DEFAULT_FAVORITE_COLUMN = "#favorite";
 
-// Connection state
-static NetworkManager* networkManager = NULL;
-static BookManager* bookManager = NULL;
-static CacheManager* cacheManager = NULL;
-static CalibreProtocol* protocol = NULL;
-static pthread_t connectionThread;
-static bool isConnecting = false;
-static bool shouldStop = false;
-static volatile bool exitRequested = false;
+// Global error message buffer
+static char connectionErrorBuffer[256] = "";
 
-static pthread_mutex_t bookCountMutex = PTHREAD_MUTEX_INITIALIZER;
-static int pendingBookCount = 0;
-static bool bookCountTimerActive = false;
+// --- State Management (RAII & Atomic) ---
+static std::unique_ptr<NetworkManager> networkManager;
+static std::unique_ptr<BookManager> bookManager;
+static std::unique_ptr<CacheManager> cacheManager;
+static std::unique_ptr<CalibreProtocol> protocol;
+
+static std::thread connectionThread;
+static std::atomic<bool> isConnecting(false);
+static std::atomic<bool> shouldStop(false);
+static std::atomic<bool> exitRequested(false);
+
+static std::mutex bookCountMutex;
 static int booksReceivedCount = 0;
 static bool syncMessageShown = false;
+
+// --- Helper Struct for Thread Safety ---
+// Holds a copy of config data so the worker thread doesn't access 'appConfig'
+struct ConnectionConfig {
+    std::string ip;
+    int port;
+    std::string password;
+};
 
 // Forward declarations
 int mainEventHandler(int type, int par1, int par2);
 void performExit();
 void startConnection();
 
-// Config editor structure (will be updated with translations)
+// Config editor structure
 static iconfigedit* configItems = NULL;
 
 void initConfigItems() {
+    // Using calloc to ensure C-compatibility for InkView API
     configItems = (iconfigedit*)calloc(7, sizeof(iconfigedit));
     
     configItems[0].type = CFG_IPADDR;
-    configItems[0].icon = NULL;
     configItems[0].text = strdup(i18n_get(STR_IP_ADDRESS));
-    configItems[0].hint = NULL;
     configItems[0].name = (char*)KEY_IP;
     configItems[0].deflt = (char*)DEFAULT_IP;
-    configItems[0].variants = NULL;
-    configItems[0].submenu = NULL;
     
     configItems[1].type = CFG_NUMBER;
-    configItems[1].icon = NULL;
     configItems[1].text = strdup(i18n_get(STR_PORT));
-    configItems[1].hint = NULL;
     configItems[1].name = (char*)KEY_PORT;
     configItems[1].deflt = (char*)DEFAULT_PORT;
-    configItems[1].variants = NULL;
-    configItems[1].submenu = NULL;
     
     configItems[2].type = CFG_PASSWORD;
-    configItems[2].icon = NULL;
     configItems[2].text = strdup(i18n_get(STR_PASSWORD));
-    configItems[2].hint = NULL;
     configItems[2].name = (char*)KEY_PASSWORD;
     configItems[2].deflt = (char*)DEFAULT_PASSWORD;
-    configItems[2].variants = NULL;
-    configItems[2].submenu = NULL;
     
     configItems[3].type = CFG_TEXT;
-    configItems[3].icon = NULL;
     configItems[3].text = strdup(i18n_get(STR_READ_COLUMN));
-    configItems[3].hint = NULL;
     configItems[3].name = (char*)KEY_READ_COLUMN;
     configItems[3].deflt = (char*)DEFAULT_READ_COLUMN;
-    configItems[3].variants = NULL;
-    configItems[3].submenu = NULL;
     
     configItems[4].type = CFG_TEXT;
-    configItems[4].icon = NULL;
     configItems[4].text = strdup(i18n_get(STR_READ_DATE_COLUMN));
-    configItems[4].hint = NULL;
     configItems[4].name = (char*)KEY_READ_DATE_COLUMN;
     configItems[4].deflt = (char*)DEFAULT_READ_DATE_COLUMN;
-    configItems[4].variants = NULL;
-    configItems[4].submenu = NULL;
     
     configItems[5].type = CFG_TEXT;
-    configItems[5].icon = NULL;
     configItems[5].text = strdup(i18n_get(STR_FAVORITE_COLUMN));
-    configItems[5].hint = NULL;
     configItems[5].name = (char*)KEY_FAVORITE_COLUMN;
     configItems[5].deflt = (char*)DEFAULT_FAVORITE_COLUMN;
-    configItems[5].variants = NULL;
-    configItems[5].submenu = NULL;
     
+    // Terminator
     configItems[6].type = 0;
-    configItems[6].icon = NULL;
-    configItems[6].text = NULL;
-    configItems[6].hint = NULL;
-    configItems[6].name = NULL;
-    configItems[6].deflt = NULL;
-    configItems[6].variants = NULL;
-    configItems[6].submenu = NULL;
 }
 
 void freeConfigItems() {
     if (configItems) {
         for (int i = 0; i < 6; i++) {
-            if (configItems[i].name) {
-                free(configItems[i].name);
-            }
+            // Only free what we strdup'ed (names are static const char*)
+            if (configItems[i].text) free(configItems[i].text);
+            // Hint: appConfig keys are static strings, no need to free .name
         }
         free(configItems);
         configItems = NULL;
@@ -206,47 +202,20 @@ void notifyConnectionFailed(const char* errorMsg) {
     SendEvent(mainEventHandler, EVT_CONNECTION_FAILED, 0, 0);
 }
 
-void showBookCountMessage() {
-    pthread_mutex_lock(&bookCountMutex);
-    
-    if (pendingBookCount > 0) {
-        SendEvent(mainEventHandler, EVT_BOOK_RECEIVED, pendingBookCount, 0);
-        pendingBookCount = 0;
-    }
-    
-    bookCountTimerActive = false;
-    pthread_mutex_unlock(&bookCountMutex);
-}
-
-void* connectionThreadFunc(void* arg) {
-    const char* ip = ReadString(appConfig, KEY_IP, DEFAULT_IP);
-    int port = ReadInt(appConfig, KEY_PORT, atoi(DEFAULT_PORT));
-    
-    const char* encryptedPassword = ReadString(appConfig, KEY_PASSWORD, DEFAULT_PASSWORD);
-    std::string password;
-    
-    if (encryptedPassword && strlen(encryptedPassword) > 0) {
-        if (encryptedPassword[0] == '$') {
-            const char* decrypted = ReadSecret(appConfig, KEY_PASSWORD, "");
-            if (decrypted) password = decrypted;
-        } else {
-            password = encryptedPassword;
-        }
-    } else {
-        password = "";
-    }
-    
-    logMsg("Connecting to %s:%d", ip, port);
+// Thread function - accepts config by value to avoid race conditions
+void connectionThreadFunc(ConnectionConfig config) {
+    logMsg("Connecting to %s:%d", config.ip.c_str(), config.port);
     
     booksReceivedCount = 0;
     syncMessageShown = false;
     
     if (shouldStop) {
         isConnecting = false;
-        return NULL;
+        return;
     }
     
-    if (!networkManager->connectToServer(ip, port)) {
+    // Use the smart pointers initialized in startCalibreConnection
+    if (!networkManager->connectToServer(config.ip, config.port)) {
         isConnecting = false;
         
         char errorMsg[512];
@@ -254,16 +223,16 @@ void* connectionThreadFunc(void* arg) {
                 i18n_get(STR_FAILED_CONNECT_SERVER),
                 i18n_get(STR_CHECK_IP_PORT));
         notifyConnectionFailed(errorMsg);
-        return NULL;
+        return;
     }
     
     if (shouldStop) {
         networkManager->disconnect();
         isConnecting = false;
-        return NULL;
+        return;
     }
     
-    if (!protocol->performHandshake(password)) {
+    if (!protocol->performHandshake(config.password)) {
         logMsg("Handshake failed: %s", protocol->getErrorMessage().c_str());
         networkManager->disconnect();
         isConnecting = false;
@@ -273,14 +242,18 @@ void* connectionThreadFunc(void* arg) {
                 i18n_get(STR_HANDSHAKE_FAILED),
                 protocol->getErrorMessage().c_str());
         notifyConnectionFailed(errorMsg);
-        return NULL;
+        return;
     }
     
     logMsg("Handshake successful");
     SendEvent(mainEventHandler, EVT_SHOW_TOAST, TOAST_CONNECTED, 0);
     
+    // Clean password from memory for security
+    std::fill(config.password.begin(), config.password.end(), 0);
+    
     protocol->handleMessages([](const std::string& status) {
         if (status == "BOOK_SAVED") {
+            // Safe to access protocol via pointer here as thread owns the lifecycle until disconnect
             int count = protocol->getBooksReceivedCount();
             SendEvent(mainEventHandler, EVT_BOOK_RECEIVED, count, 0);
         }
@@ -288,14 +261,11 @@ void* connectionThreadFunc(void* arg) {
     
     logMsg("Disconnecting");
     
-    protocol->disconnect();
-    networkManager->disconnect();
+    if (protocol) protocol->disconnect();
+    if (networkManager) networkManager->disconnect();
     
     isConnecting = false;
-    
     SendEvent(mainEventHandler, EVT_SHOW_TOAST, TOAST_DISCONNECTED, 0);
-    
-    return NULL;
 }
 
 void startCalibreConnection() {
@@ -306,37 +276,66 @@ void startCalibreConnection() {
     isConnecting = true;
     shouldStop = false;
     
-    if (!networkManager) networkManager = new NetworkManager();
+    // --- 1. Prepare Managers (Main Thread) ---
+    // Resetting unique_ptrs automatically deletes old objects
+    if (!networkManager) networkManager = std::make_unique<NetworkManager>();
+    
     if (!bookManager) {
-        bookManager = new BookManager();
+        bookManager = std::make_unique<BookManager>();
         bookManager->initialize("");
     }
+    
     if (!cacheManager) {
-        cacheManager = new CacheManager();
+        cacheManager = std::make_unique<CacheManager>();
     }
     
-    if (!protocol) {
-        const char* readCol = ReadString(appConfig, KEY_READ_COLUMN, DEFAULT_READ_COLUMN);
-        const char* readDateCol = ReadString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
-        const char* favCol = ReadString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
-        
-        protocol = new CalibreProtocol(networkManager, bookManager, cacheManager,
-                                      readCol ? readCol : "", 
-                                      readDateCol ? readDateCol : "", 
-                                      favCol ? favCol : "");
+    // --- 2. Read Configuration (Main Thread) ---
+    // Critical: Reading iconfig in main thread to avoid data races
+    ConnectionConfig config;
+    config.ip = ReadString(appConfig, KEY_IP, DEFAULT_IP);
+    config.port = ReadInt(appConfig, KEY_PORT, atoi(DEFAULT_PORT));
+    
+    const char* encryptedPassword = ReadString(appConfig, KEY_PASSWORD, DEFAULT_PASSWORD);
+    if (encryptedPassword && strlen(encryptedPassword) > 0) {
+        if (encryptedPassword[0] == '$') {
+            const char* decrypted = ReadSecret(appConfig, KEY_PASSWORD, "");
+            if (decrypted) config.password = decrypted;
+        } else {
+            config.password = encryptedPassword;
+        }
     }
     
-    if (pthread_create(&connectionThread, NULL, connectionThreadFunc, NULL) != 0) {
-        logMsg("Failed to create thread");
+    // Re-create protocol with current settings
+    const char* readCol = ReadString(appConfig, KEY_READ_COLUMN, DEFAULT_READ_COLUMN);
+    const char* readDateCol = ReadString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
+    const char* favCol = ReadString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
+    
+    protocol = std::make_unique<CalibreProtocol>(
+        networkManager.get(), 
+        bookManager.get(), 
+        cacheManager.get(),
+        readCol ? readCol : "", 
+        readDateCol ? readDateCol : "", 
+        favCol ? favCol : ""
+    );
+    
+    // --- 3. Start Thread ---
+    // Join previous thread if it was finished but not joined
+    if (connectionThread.joinable()) {
+        connectionThread.join();
+    }
+    
+    // Launch new thread passing config by value
+    try {
+        connectionThread = std::thread(connectionThreadFunc, config);
+    } catch (const std::system_error& e) {
+        logMsg("Failed to create thread: %s", e.what());
         isConnecting = false;
-        return;
     }
 }
 
 void startConnection() {
-    if (isConnecting) {
-        return;
-    }
+    if (isConnecting) return;
     
     iv_netinfo* netInfo = NetInfo();
     if (netInfo && netInfo->connected) {
@@ -362,13 +361,16 @@ void connectionTimerFunc() {
 void stopConnection() {
     shouldStop = true;
     
+    // Trigger disconnect to break blocking socket calls
     if (protocol) protocol->disconnect();
     if (networkManager) networkManager->disconnect();
 
-    if (isConnecting) {
-        pthread_detach(connectionThread);
-        isConnecting = false;
+    // Wait for thread to finish if it's running
+    if (connectionThread.joinable()) {
+        connectionThread.join();
     }
+    
+    isConnecting = false;
 }
 
 void initConfig() {
@@ -406,7 +408,7 @@ void configItemChangedHandler(char *name) {
 }
 
 void retryConnectionHandler(int button) {
-    if (button == 2) {
+    if (button == 2) { // "Retry" button
         SoftUpdate(); 
         startConnection();
     }
@@ -418,30 +420,20 @@ void configCloseHandler() {
 
 void showMainScreen() {
     ClearScreen();
-    
     char* title = strdup(i18n_get(STR_APP_TITLE));
-    
-    OpenConfigEditor(
-        title,
-        appConfig,
-        configItems,
-        configCloseHandler,
-        configItemChangedHandler
-    );
-    
+    OpenConfigEditor(title, appConfig, configItems, configCloseHandler, configItemChangedHandler);
     free(title);
 }
 
 void updateConnectionStatus(const char* status) {
     logMsg("Status: %s", status);
+    // Optional: Draw status on screen if UI requires it
 }
 
 void finalSyncMessageTimer() {
     ClearTimer((iv_timerproc)finalSyncMessageTimer);
     
-    if (syncMessageShown) {
-        return;
-    }
+    if (syncMessageShown) return;
     
     logMsg("Timer fired: Batch sync finished");
     syncMessageShown = true;
@@ -465,27 +457,28 @@ void finalSyncMessageTimer() {
 }
 
 void performExit() {
-    if (exitRequested) {
-        return;
-    }
-    
+    if (exitRequested) return;
     exitRequested = true;
     
+    // 1. Stop Timers
     ClearTimer((iv_timerproc)connectionTimerFunc);
     ClearTimer((iv_timerproc)finalSyncMessageTimer);
     
+    // 2. Stop Network & Thread
     stopConnection();
     
+    // 3. Save Config
     CloseConfigLevel();
     saveAndCloseConfig();
     
-    if (protocol) { delete protocol; protocol = NULL; }
-    if (cacheManager) { delete cacheManager; cacheManager = NULL; }
-    if (networkManager) { delete networkManager; networkManager = NULL; }
-    if (bookManager) { delete bookManager; bookManager = NULL; }
+    // 4. Release Resources (RAII handles deletion)
+    protocol.reset();
+    cacheManager.reset();
+    networkManager.reset();
+    bookManager.reset();
     
     freeConfigItems();
-    closeLog();
+    closeLog(); // Thread-safe close
     CloseApp();
 }
 
@@ -499,7 +492,7 @@ int mainEventHandler(int type, int par1, int par2) {
             initConfig();
             showMainScreen();
             SoftUpdate();
-            SetWeakTimer("ConnectTimer", connectionTimerFunc, 300);
+            SetWeakTimer("ConnectTimer", (iv_timerproc)connectionTimerFunc, 300);
             break;
             
         case EVT_USER_UPDATE:
@@ -507,7 +500,7 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
         
         case EVT_NET_CONNECTED:
-            if (!isConnecting && !networkManager->isConnected()) {
+            if (!isConnecting && (!networkManager || !networkManager->isConnected())) {
                 startCalibreConnection();
             }
             break;
@@ -529,7 +522,6 @@ int mainEventHandler(int type, int par1, int par2) {
 
         case EVT_BOOK_RECEIVED: {
             int count = par1;
-            
             booksReceivedCount = count;
             syncMessageShown = false;
             
@@ -543,9 +535,9 @@ int mainEventHandler(int type, int par1, int par2) {
             updateConnectionStatus(statusBuffer);
             SoftUpdate();
             
+            // Debounce the completion message
             ClearTimer((iv_timerproc)finalSyncMessageTimer);
             SetWeakTimer("SyncFinalize", (iv_timerproc)finalSyncMessageTimer, 1000);
-            
             break;
         }
 
@@ -564,23 +556,7 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
 
         case EVT_EXIT:
-            if (!exitRequested) {
-                exitRequested = true;
-                
-                ClearTimer((iv_timerproc)connectionTimerFunc);
-                ClearTimer((iv_timerproc)finalSyncMessageTimer);
-                
-                stopConnection();
-                saveAndCloseConfig();
-                
-                if (protocol) { delete protocol; protocol = NULL; }
-                if (cacheManager) { delete cacheManager; cacheManager = NULL; }
-                if (networkManager) { delete networkManager; networkManager = NULL; }
-                if (bookManager) { delete bookManager; bookManager = NULL; }
-                
-                freeConfigItems();
-                closeLog();
-            }
+            performExit();
             return 1;
     }
     
