@@ -397,7 +397,7 @@ void configItemChangedHandler(char *name) {
 }
 
 void retryConnectionHandler(int button) {
-    if (button == 1) {
+    if (button == 2) {
         SoftUpdate(); 
         startConnection();
     }
@@ -498,7 +498,7 @@ int mainEventHandler(int type, int par1, int par2) {
             Dialog(ICON_ERROR, 
                    "Connection Failed", 
                    connectionErrorBuffer,
-                   "Cancel", "Retry",
+                   "Cancel", "Retry",  // Swapped button order
                    retryConnectionHandler);
             break;
 
