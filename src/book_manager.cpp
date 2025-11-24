@@ -216,9 +216,9 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
 
 static time_t roundToDay(time_t timestamp) {
     struct tm* tm_info = localtime(&timestamp);
-    tm_info->tm_hour = 0;
-    tm_info->tm_min = 0;
-    tm_info->tm_sec = 0;
+    tm_info->tm_hour = 23;
+    tm_info->tm_min = 59;
+    tm_info->tm_sec = 59;
     return mktime(tm_info);
 }
 
