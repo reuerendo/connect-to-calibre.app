@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <map>
 #include <set>
-#include "inkview.h"
+#include "inkview.h" // Required for iv_mkdir, iv_fopen, etc.
 #include <json-c/json.h>
 #include <openssl/sha.h>
 #include <sys/statvfs.h>
@@ -14,7 +14,7 @@
 #include <iomanip>
 #include <ctime>
 
-// Optimized recursive mkdir with fewer string allocations
+// Optimized recursive mkdir using SDK wrapper iv_mkdir
 static int recursiveMkdir(const std::string& path) {
     std::string current_path = path;
     if (current_path.empty()) return 0;
@@ -28,7 +28,8 @@ static int recursiveMkdir(const std::string& path) {
     for (size_t i = 1; i < current_path.length(); ++i) {
         if (current_path[i] == '/') {
             current_path[i] = 0; // Temporarily terminate string
-            if (mkdir(current_path.c_str(), 0755) != 0) {
+            // Use iv_mkdir from inkview.h
+            if (iv_mkdir(current_path.c_str(), 0755) != 0) {
                 if (errno != EEXIST) {
                     return -1;
                 }
@@ -37,8 +38,8 @@ static int recursiveMkdir(const std::string& path) {
         }
     }
     
-    // Create final directory
-    if (mkdir(current_path.c_str(), 0755) != 0) {
+    // Create final directory using iv_mkdir
+    if (iv_mkdir(current_path.c_str(), 0755) != 0) {
         if (errno != EEXIST) {
             return -1;
         }
@@ -225,6 +226,7 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
     json_object* deviceInfo = json_object_new_object();
     json_object* deviceData = json_object_new_object();
     
+    // Using GetGlobalConfig from inkview.h and ReadString
     const char* uuid = ReadString(GetGlobalConfig(), "calibre_device_uuid", "");
     if (strlen(uuid) == 0) {
         char uuidBuf[64];
@@ -232,6 +234,8 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
         snprintf(uuidBuf, sizeof(uuidBuf), "%08x-%04x-%04x-%04x-%012llx",
                 (unsigned int)rand(), rand() & 0xFFFF, rand() & 0xFFFF, 
                 rand() & 0xFFFF, (unsigned long long)rand() * rand());
+        
+        // WriteString and SaveConfig
         WriteString(GetGlobalConfig(), "calibre_device_uuid", uuidBuf);
         SaveConfig(GetGlobalConfig());
         uuid = ReadString(GetGlobalConfig(), "calibre_device_uuid", "");
@@ -378,7 +382,7 @@ void CalibreProtocol::disconnect() {
     }
     
     if (currentBookFile) {
-        iv_fclose(currentBookFile);
+        iv_fclose(currentBookFile); // Using iv_fclose
         currentBookFile = nullptr;
     }
     
@@ -396,6 +400,7 @@ bool CalibreProtocol::handleSetCalibreInfo(json_object* args) {
 
 bool CalibreProtocol::handleTotalSpace(json_object* args) {
     struct statvfs stat;
+    // Using standard statvfs as SDK doesn't provide a wrapper for this specific call
     if (statvfs("/mnt/ext1", &stat) != 0) {
         return sendErrorResponse("Failed to get total space");
     }
@@ -825,6 +830,7 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
         }
     }
     
+    // Using iv_fopen
     currentBookFile = iv_fopen(filePath.c_str(), "wb");
     if (!currentBookFile) {
         return sendErrorResponse("Failed to create book file");
@@ -835,7 +841,7 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     
     if (!sendOKResponse(response)) {
         freeJSON(response);
-        iv_fclose(currentBookFile);
+        iv_fclose(currentBookFile); // Using iv_fclose
         currentBookFile = nullptr;
         return false;
     }
@@ -854,7 +860,8 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
             return false;
         }
         
-        size_t written = fwrite(buffer.data(), 1, toRead, currentBookFile);
+        // Using iv_fwrite
+        size_t written = iv_fwrite(buffer.data(), 1, toRead, currentBookFile);
         if (written != toRead) {
             iv_fclose(currentBookFile);
             currentBookFile = nullptr;
@@ -942,14 +949,15 @@ bool CalibreProtocol::handleGetBookFileSegment(json_object* args) {
     std::string lpath = json_object_get_string(lpathObj);
     std::string filePath = bookManager->getBookFilePath(lpath);
     
+    // Using iv_fopen
     FILE* file = iv_fopen(filePath.c_str(), "rb");
     if (!file) {
         return sendErrorResponse("Failed to open book file");
     }
     
-    fseek(file, 0, SEEK_END);
-    long fileLength = ftell(file);
-    fseek(file, 0, SEEK_SET);
+    iv_fseek(file, 0, SEEK_END); // Using iv_fseek
+    long fileLength = iv_ftell(file); // Using iv_ftell
+    iv_fseek(file, 0, SEEK_SET);
     
     json_object* response = json_object_new_object();
     json_object_object_add(response, "fileLength", json_object_new_int64(fileLength));
@@ -966,7 +974,8 @@ bool CalibreProtocol::handleGetBookFileSegment(json_object* args) {
     std::vector<char> buffer(CHUNK_SIZE);
     
     while (!feof(file)) {
-        size_t read = fread(buffer.data(), 1, CHUNK_SIZE, file);
+        // Using iv_fread
+        size_t read = iv_fread(buffer.data(), 1, CHUNK_SIZE, file);
         if (read > 0) {
             if (!network->sendBinaryData(buffer.data(), read)) {
                 iv_fclose(file);
