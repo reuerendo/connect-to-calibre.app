@@ -110,6 +110,7 @@ static volatile bool exitRequested = false;
 static pthread_mutex_t bookCountMutex = PTHREAD_MUTEX_INITIALIZER;
 static int pendingBookCount = 0;
 static bool bookCountTimerActive = false;
+static int booksReceivedCount = 0;
 
 // Forward declarations
 int mainEventHandler(int type, int par1, int par2);
@@ -447,6 +448,25 @@ void showMainScreen() {
     );
 }
 
+void updateConnectionStatus(const char* status) {
+    logMsg("Status: %s", status);
+}
+
+void finalSyncMessageTimer() {
+    ClearTimer((iv_timerproc)finalSyncMessageTimer);
+    logMsg("Timer fired: Batch sync finished");
+    
+    char msgBuffer[128];
+    snprintf(msgBuffer, sizeof(msgBuffer),
+             "Batch sync finished.\nTotal received: %d book%s.",
+             booksReceivedCount, booksReceivedCount == 1 ? "" : "s");
+    
+    Message(ICON_INFORMATION, "Sync Complete", msgBuffer, 4000);
+    
+    updateConnectionStatus("Connected (Idle)");
+    SoftUpdate();
+}
+
 void performExit() {
     if (exitRequested) {
         return;
@@ -454,15 +474,11 @@ void performExit() {
     
     exitRequested = true;
     
-    // Clear all timers
+    // Clear the start timer if we exit immediately
     ClearTimer((iv_timerproc)connectionTimerFunc);
     
-    pthread_mutex_lock(&bookCountMutex);
-    if (bookCountTimerActive) {
-        ClearTimer((iv_timerproc)showBookCountMessage);
-        bookCountTimerActive = false;
-    }
-    pthread_mutex_unlock(&bookCountMutex);
+    // Clear sync finalization timer
+    ClearTimer((iv_timerproc)finalSyncMessageTimer);
     
     stopConnection();
     
@@ -485,7 +501,11 @@ int mainEventHandler(int type, int par1, int par2) {
             SetPanelType(PANEL_ENABLED);
             initConfig();
             showMainScreen();
+            
+            // Force an initial update to ensure the config screen is drawn
             SoftUpdate();
+            
+            // Schedule the connection start after 300ms to allow UI to render
             SetWeakTimer("ConnectTimer", connectionTimerFunc, 300);
             break;
             
@@ -512,25 +532,42 @@ int mainEventHandler(int type, int par1, int par2) {
                    "Retry", "Cancel", 
                    retryConnectionHandler);
             break;
-            
+
         case EVT_BOOK_RECEIVED: {
-            // par1 contains the total number of books received
-            char msgBuf[128];
-            if (par1 == 1) {
-                snprintf(msgBuf, sizeof(msgBuf), "1 book added");
-            } else {
-                snprintf(msgBuf, sizeof(msgBuf), "%d books added", par1);
-            }
-            Message(ICON_INFORMATION, "Calibre", msgBuf, 3000);
-            logMsg("Books received: %d", par1);
+            int count = par1;
+            
+            // Сохраняем глобально, чтобы функция таймера видела актуальное число
+            booksReceivedCount = count;
+            
+            // 1. Обновляем статус на экране (тихо, без всплывающего окна)
+            char statusBuffer[64];
+            snprintf(statusBuffer, sizeof(statusBuffer), "Receiving... (%d book%s)",
+                     count, count == 1 ? "" : "s");
+            updateConnectionStatus(statusBuffer);
+            SoftUpdate();
+            
+            // 2. Логика таймера (Debounce)
+            
+            // Сначала УДАЛЯЕМ предыдущий таймер, если он был запущен.
+            // Это отменяет показ сообщения, если новая книга пришла быстрее чем за 1 сек.
+            ClearTimer((iv_timerproc)finalSyncMessageTimer);
+            
+            // Теперь ЗАПУСКАЕМ таймер заново на 1000 мс (1 секунда).
+            // Если в течение секунды придет еще книга, этот код выполнится снова,
+            // и таймер снова сбросится.
+            SetWeakTimer("SyncFinalize", (iv_timerproc)finalSyncMessageTimer, 1000);
+            
             break;
         }
 
         case EVT_SHOW_TOAST:
+            // Handle toast messages ONLY for Connected/Disconnected
             if (par1 == TOAST_CONNECTED) {
                 Message(ICON_INFORMATION, "Calibre", "Connected Successfully", 2000);
+                updateConnectionStatus("Connected (Idle)");
             } else if (par1 == TOAST_DISCONNECTED) {
                 Message(ICON_INFORMATION, "Calibre", "Disconnected", 2000);
+                updateConnectionStatus("Disconnected");
             }
             break;
             
@@ -549,12 +586,9 @@ int mainEventHandler(int type, int par1, int par2) {
             if (!exitRequested) {
                 exitRequested = true;
                 
-                pthread_mutex_lock(&bookCountMutex);
-                if (bookCountTimerActive) {
-                    ClearTimer((iv_timerproc)showBookCountMessage);
-                    bookCountTimerActive = false;
-                }
-                pthread_mutex_unlock(&bookCountMutex);
+                // Clear timers
+                ClearTimer((iv_timerproc)connectionTimerFunc);
+                ClearTimer((iv_timerproc)finalSyncMessageTimer);
                 
                 stopConnection();
                 saveAndCloseConfig();

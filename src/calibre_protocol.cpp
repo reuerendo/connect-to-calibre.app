@@ -2,7 +2,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <vector>
-#include <algorithm>  // <-- Добавьте эту строку
+#include <algorithm>
 #include "inkview.h"
 #include <json-c/json.h>
 #include <openssl/sha.h>
@@ -901,6 +901,7 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     
     bookManager->addBook(metadata);
     
+    // Update cache with new book
     if (cacheManager) {
         cacheManager->updateCache(metadata);
     }
