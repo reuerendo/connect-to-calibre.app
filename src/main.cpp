@@ -25,11 +25,8 @@
 
 // Debug logging
 static FILE* logFile = NULL;
-static bool logInitialized = false;
 
 void initLog() {
-    if (logInitialized) return;
-    
     const char* logPath = "/mnt/ext1/system/calibre-connect.log";
     
     struct stat st;
@@ -42,15 +39,13 @@ void initLog() {
     logFile = iv_fopen(logPath, "a");
     if (logFile) {
         time_t now = time(NULL);
-        fprintf(logFile, "\n=== Calibre Connect Started [%s] ===\n", ctime(&now));
+        fprintf(logFile, "\n= Calibre Connect Started [%s] =\n", ctime(&now));
         fflush(logFile);
-        logInitialized = true;
     }
 }
 
 void logMsg(const char* format, ...) {
     if (!logFile) {
-        if (logInitialized) return; // Avoid infinite retry
         initLog(); 
         if (!logFile) return;
     }
@@ -70,12 +65,12 @@ void logMsg(const char* format, ...) {
 
 void closeLog() {
     if (logFile) {
+        // Log closing time only
         time_t now = time(NULL);
-        fprintf(logFile, "=== Calibre Connect Closed [%s] ===\n", ctime(&now));
+        fprintf(logFile, "= Calibre Connect Closed [%s] =\n", ctime(&now));
         fflush(logFile);
         iv_fclose(logFile);
         logFile = NULL;
-        logInitialized = false;
     }
 }
 
@@ -111,6 +106,12 @@ static pthread_t connectionThread;
 static bool isConnecting = false;
 static bool shouldStop = false;
 static volatile bool exitRequested = false;
+
+static pthread_mutex_t bookCountMutex = PTHREAD_MUTEX_INITIALIZER;
+static int pendingBookCount = 0;
+static bool bookCountTimerActive = false;
+static int booksReceivedCount = 0;
+static bool syncMessageShown = false;
 
 // Forward declarations
 int mainEventHandler(int type, int par1, int par2);
@@ -191,29 +192,22 @@ static iconfigedit configItems[] = {
     }
 };
 
-void cleanupResources() {
-    if (protocol) {
-        delete protocol;
-        protocol = NULL;
-    }
-    if (cacheManager) {
-        delete cacheManager;
-        cacheManager = NULL;
-    }
-    if (networkManager) {
-        delete networkManager;
-        networkManager = NULL;
-    }
-    if (bookManager) {
-        delete bookManager;
-        bookManager = NULL;
-    }
-}
-
 void notifyConnectionFailed(const char* errorMsg) {
     logMsg("Connection failed: %s", errorMsg);
     snprintf(connectionErrorBuffer, sizeof(connectionErrorBuffer), "%s", errorMsg);
     SendEvent(mainEventHandler, EVT_CONNECTION_FAILED, 0, 0);
+}
+
+void showBookCountMessage() {
+    pthread_mutex_lock(&bookCountMutex);
+    
+    if (pendingBookCount > 0) {
+        SendEvent(mainEventHandler, EVT_BOOK_RECEIVED, pendingBookCount, 0);
+        pendingBookCount = 0;
+    }
+    
+    bookCountTimerActive = false;
+    pthread_mutex_unlock(&bookCountMutex);
 }
 
 void* connectionThreadFunc(void* arg) {
@@ -221,18 +215,29 @@ void* connectionThreadFunc(void* arg) {
     int port = ReadInt(appConfig, KEY_PORT, atoi(DEFAULT_PORT));
     
     const char* encryptedPassword = ReadString(appConfig, KEY_PASSWORD, DEFAULT_PASSWORD);
-    std::string password = (encryptedPassword && encryptedPassword[0] == '$')
-        ? ReadSecret(appConfig, KEY_PASSWORD, "")
-        : (encryptedPassword ? encryptedPassword : "");
+    std::string password;
+    
+    if (encryptedPassword && strlen(encryptedPassword) > 0) {
+        if (encryptedPassword[0] == '$') {
+            const char* decrypted = ReadSecret(appConfig, KEY_PASSWORD, "");
+            if (decrypted) password = decrypted;
+        } else {
+            password = encryptedPassword;
+        }
+    } else {
+        password = "";
+    }
     
     logMsg("Connecting to %s:%d", ip, port);
+    
+    booksReceivedCount = 0;
+    syncMessageShown = false;
     
     if (shouldStop) {
         isConnecting = false;
         return NULL;
     }
     
-    // Try to connect to Calibre (TCP)
     if (!networkManager->connectToServer(ip, port)) {
         isConnecting = false;
         notifyConnectionFailed("Failed to connect to Calibre server.\nPlease check IP address and port.");
@@ -256,7 +261,6 @@ void* connectionThreadFunc(void* arg) {
         return NULL;
     }
     
-    // Handshake successful - Notify UI of connection
     logMsg("Handshake successful");
     SendEvent(mainEventHandler, EVT_SHOW_TOAST, TOAST_CONNECTED, 0);
     
@@ -265,7 +269,6 @@ void* connectionThreadFunc(void* arg) {
             int count = protocol->getBooksReceivedCount();
             SendEvent(mainEventHandler, EVT_BOOK_RECEIVED, count, 0);
         }
-        // No logging for intermediate statuses to reduce spam
     });
     
     logMsg("Disconnecting");
@@ -275,7 +278,6 @@ void* connectionThreadFunc(void* arg) {
     
     isConnecting = false;
     
-    // Notify UI of disconnection
     SendEvent(mainEventHandler, EVT_SHOW_TOAST, TOAST_DISCONNECTED, 0);
     
     return NULL;
@@ -289,9 +291,7 @@ void startCalibreConnection() {
     isConnecting = true;
     shouldStop = false;
     
-    if (!networkManager) {
-        networkManager = new NetworkManager();
-    }
+    if (!networkManager) networkManager = new NetworkManager();
     if (!bookManager) {
         bookManager = new BookManager();
         bookManager->initialize("");
@@ -332,6 +332,8 @@ void startConnection() {
     }
 
     // 2. Not connected? Use standard SDK dialog to connect.
+    
+    // NetConnect(NULL) calls the native system dialog.
     int netResult = NetConnect(NULL);
 
     if (netResult == NET_OK) {
@@ -355,7 +357,7 @@ void stopConnection() {
     if (networkManager) networkManager->disconnect();
 
     if (isConnecting) {
-        pthread_join(connectionThread, NULL);
+        pthread_detach(connectionThread);
         isConnecting = false;
     }
 }
@@ -386,6 +388,10 @@ void saveAndCloseConfig() {
     }
 }
 
+void configSaveHandler() {
+    if (appConfig) SaveConfig(appConfig);
+}
+
 void configItemChangedHandler(char *name) {
     if (appConfig) SaveConfig(appConfig);
 }
@@ -412,6 +418,31 @@ void showMainScreen() {
     );
 }
 
+void updateConnectionStatus(const char* status) {
+    logMsg("Status: %s", status);
+}
+
+void finalSyncMessageTimer() {
+    ClearTimer((iv_timerproc)finalSyncMessageTimer);
+    
+    if (syncMessageShown) {
+        return;
+    }
+    
+    logMsg("Timer fired: Batch sync finished");
+    syncMessageShown = true;
+    
+    char msgBuffer[128];
+    snprintf(msgBuffer, sizeof(msgBuffer),
+             "Batch sync finished.\nTotal received: %d book%s.",
+             booksReceivedCount, booksReceivedCount == 1 ? "" : "s");
+    
+    Message(ICON_INFORMATION, "Sync Complete", msgBuffer, 4000);
+    
+    updateConnectionStatus("Connected (Idle)");
+    SoftUpdate();
+}
+
 void performExit() {
     if (exitRequested) {
         return;
@@ -419,15 +450,18 @@ void performExit() {
     
     exitRequested = true;
     
-    // Clear the start timer if we exit immediately
     ClearTimer((iv_timerproc)connectionTimerFunc);
+    ClearTimer((iv_timerproc)finalSyncMessageTimer);
     
     stopConnection();
     
     CloseConfigLevel();
     saveAndCloseConfig();
     
-    cleanupResources();
+    if (protocol) { delete protocol; protocol = NULL; }
+    if (cacheManager) { delete cacheManager; cacheManager = NULL; }
+    if (networkManager) { delete networkManager; networkManager = NULL; }
+    if (bookManager) { delete bookManager; bookManager = NULL; }
     
     closeLog();
     CloseApp();
@@ -440,11 +474,7 @@ int mainEventHandler(int type, int par1, int par2) {
             SetPanelType(PANEL_ENABLED);
             initConfig();
             showMainScreen();
-            
-            // Force an initial update to ensure the config screen is drawn
             SoftUpdate();
-            
-            // Schedule the connection start after 300ms to allow UI to render
             SetWeakTimer("ConnectTimer", connectionTimerFunc, 300);
             break;
             
@@ -472,17 +502,31 @@ int mainEventHandler(int type, int par1, int par2) {
                    retryConnectionHandler);
             break;
 
-        case EVT_BOOK_RECEIVED:
-            // Book received notification - par1 contains count
-            logMsg("Books received: %d", par1);
+        case EVT_BOOK_RECEIVED: {
+            int count = par1;
+            
+            booksReceivedCount = count;
+            syncMessageShown = false;
+            
+            char statusBuffer[64];
+            snprintf(statusBuffer, sizeof(statusBuffer), "Receiving... (%d book%s)",
+                     count, count == 1 ? "" : "s");
+            updateConnectionStatus(statusBuffer);
+            SoftUpdate();
+            
+            ClearTimer((iv_timerproc)finalSyncMessageTimer);
+            SetWeakTimer("SyncFinalize", (iv_timerproc)finalSyncMessageTimer, 1000);
+            
             break;
+        }
 
         case EVT_SHOW_TOAST:
-            // Handle toast messages ONLY for Connected/Disconnected
             if (par1 == TOAST_CONNECTED) {
-                Message(ICON_INFORMATION, "Calibre", "Connected Successfully", 2000);
+                Message(ICON_INFORMATION, "Calibre", "Connected", 2000);
+                updateConnectionStatus("Connected (Idle)");
             } else if (par1 == TOAST_DISCONNECTED) {
                 Message(ICON_INFORMATION, "Calibre", "Disconnected", 2000);
+                updateConnectionStatus("Disconnected");
             }
             break;
             
@@ -491,11 +535,21 @@ int mainEventHandler(int type, int par1, int par2) {
             break;
 
         case EVT_EXIT:
-            exitRequested = true;
-            stopConnection();
-            saveAndCloseConfig();
-            cleanupResources();
-            closeLog();
+            if (!exitRequested) {
+                exitRequested = true;
+                
+                ClearTimer((iv_timerproc)connectionTimerFunc);
+                ClearTimer((iv_timerproc)finalSyncMessageTimer);
+                
+                stopConnection();
+                saveAndCloseConfig();
+                
+                if (protocol) { delete protocol; protocol = NULL; }
+                if (cacheManager) { delete cacheManager; cacheManager = NULL; }
+                if (networkManager) { delete networkManager; networkManager = NULL; }
+                if (bookManager) { delete bookManager; bookManager = NULL; }
+                closeLog();
+            }
             return 1;
     }
     
