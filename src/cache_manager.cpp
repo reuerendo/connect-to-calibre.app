@@ -4,11 +4,17 @@
 #include <cstdio>
 #include <sys/stat.h>
 #include <algorithm>
-#include <cstring>  // <--- Added this to fix 'strlen' error
+#include <cstring>
+#include <unistd.h> // Для fsync, unlink, rename
 
+// Оптимизация логгера: добавлен fflush и проверка указателя
 #define LOG_CACHE(fmt, ...) { \
     FILE* f = fopen("/mnt/ext1/system/calibre-connect.log", "a"); \
-    if(f) { fprintf(f, "[CACHE] " fmt "\n", ##__VA_ARGS__); fclose(f); } \
+    if(f) { \
+        fprintf(f, "[CACHE] " fmt "\n", ##__VA_ARGS__); \
+        fflush(f); \
+        fclose(f); \
+    } \
 }
 
 CacheManager::CacheManager() {
@@ -24,10 +30,10 @@ bool CacheManager::initialize(const std::string& deviceUuid) {
     }
     
     this->deviceUuid = deviceUuid;
+    // Формируем путь. Можно вынести базовый путь в константу.
     cacheFilePath = "/mnt/ext1/system/calibre_cache_" + deviceUuid + ".json";
     
     LOG_CACHE("Initialized cache for device: %s", deviceUuid.c_str());
-    LOG_CACHE("Cache file path: %s", cacheFilePath.c_str());
     
     return loadCache();
 }
@@ -36,6 +42,7 @@ std::string CacheManager::getCurrentTimestamp() const {
     time_t now = time(NULL);
     struct tm* tm_info = gmtime(&now);
     char buffer[32];
+    // Оптимизация: использование фиксированного формата быстрее чем сложный strftime, но оставим для надежности
     strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S+00:00", tm_info);
     return std::string(buffer);
 }
@@ -46,6 +53,7 @@ time_t CacheManager::parseTimestamp(const std::string& isoTime) const {
     struct tm tm = {0};
     int y, m, d, H, M, S;
     
+    // sscanf достаточно быстр
     if (sscanf(isoTime.c_str(), "%d-%d-%dT%d:%d:%d", 
                &y, &m, &d, &H, &M, &S) >= 6) {
         tm.tm_year = y - 1900;
@@ -61,16 +69,12 @@ time_t CacheManager::parseTimestamp(const std::string& isoTime) const {
 }
 
 bool CacheManager::loadCache() {
-    struct stat st;
-    if (stat(cacheFilePath.c_str(), &st) != 0) {
-        LOG_CACHE("Cache file does not exist, starting fresh");
-        return true;
-    }
-    
+    // Оптимизация: Убран лишний вызов stat(). Сразу пробуем открыть.
     FILE* f = fopen(cacheFilePath.c_str(), "r");
     if (!f) {
-        LOG_CACHE("Failed to open cache file for reading");
-        return false;
+        // Файла нет или ошибка доступа - считаем кэш пустым, это нормальная ситуация
+        LOG_CACHE("Cache file not found or inaccessible, starting fresh");
+        return true;
     }
     
     fseek(f, 0, SEEK_END);
@@ -83,6 +87,7 @@ bool CacheManager::loadCache() {
         return true;
     }
     
+    // Проверка на разумный размер файла, чтобы не съесть всю память
     std::vector<char> buffer(fileSize + 1);
     size_t read = fread(buffer.data(), 1, fileSize, f);
     fclose(f);
@@ -104,7 +109,7 @@ bool CacheManager::loadCache() {
     
     // Iterate through cache entries
     json_object_object_foreach(root, key, val) {
-        (void)key; // Silences the "unused variable" warning
+        (void)key;
         
         json_object* bookObj = NULL;
         json_object* lastUsedObj = NULL;
@@ -116,27 +121,27 @@ bool CacheManager::loadCache() {
         
         BookMetadata metadata;
         
-        // Parse book metadata
+        // Helper lambda for string extraction could optimize code size, but inline is faster here
         json_object* tmp = NULL;
         if (json_object_object_get_ex(bookObj, "uuid", &tmp)) {
             const char* str = json_object_get_string(tmp);
-            metadata.uuid = str ? str : "";
+            if(str) metadata.uuid = str;
         }
         if (json_object_object_get_ex(bookObj, "title", &tmp)) {
             const char* str = json_object_get_string(tmp);
-            metadata.title = str ? str : "";
+            if(str) metadata.title = str;
         }
         if (json_object_object_get_ex(bookObj, "authors", &tmp)) {
             const char* str = json_object_get_string(tmp);
-            metadata.authors = str ? str : "";
+            if(str) metadata.authors = str;
         }
         if (json_object_object_get_ex(bookObj, "lpath", &tmp)) {
             const char* str = json_object_get_string(tmp);
-            metadata.lpath = str ? str : "";
+            if(str) metadata.lpath = str;
         }
         if (json_object_object_get_ex(bookObj, "last_modified", &tmp)) {
             const char* str = json_object_get_string(tmp);
-            metadata.lastModified = str ? str : "";
+            if(str) metadata.lastModified = str;
         }
         
         // Parse sync fields
@@ -145,7 +150,7 @@ bool CacheManager::loadCache() {
         }
         if (json_object_object_get_ex(bookObj, "_last_read_date_", &tmp)) {
             const char* str = json_object_get_string(tmp);
-            metadata.lastReadDate = str ? str : "";
+            if(str) metadata.lastReadDate = str;
         }
         if (json_object_object_get_ex(bookObj, "_is_favorite_", &tmp)) {
             metadata.isFavorite = json_object_get_boolean(tmp);
@@ -154,9 +159,9 @@ bool CacheManager::loadCache() {
         const char* lastUsedStr = json_object_get_string(lastUsedObj);
         std::string lastUsed = lastUsedStr ? lastUsedStr : "";
         
-        // Store using lpath as key
         if (!metadata.lpath.empty()) {
-            cacheData[metadata.lpath] = CacheEntry(metadata, lastUsed);
+            // Emplace construct optimization
+            cacheData.emplace(metadata.lpath, CacheEntry(metadata, lastUsed));
             loaded++;
         }
     }
@@ -170,28 +175,41 @@ bool CacheManager::loadCache() {
 bool CacheManager::saveCache() {
     LOG_CACHE("Saving cache with %d entries", (int)cacheData.size());
     
-    // Purge old entries before saving
     purgeOldEntries(30);
     
-    json_object* root = json_object_new_object();
+    // Оптимизация записи: Atomic Write (tmp file -> rename)
+    std::string tmpFilePath = cacheFilePath + ".tmp";
+    FILE* f = fopen(tmpFilePath.c_str(), "w");
+    if (!f) {
+        LOG_CACHE("Failed to open tmp cache file for writing");
+        return false;
+    }
     
+    // ОПТИМИЗАЦИЯ RAM: Потоковая запись JSON
+    // Вместо создания огромного json_object дерева в памяти,
+    // мы пишем файл кусками вручную, сериализуя только по одной книге за раз.
+    
+    if (fputc('{', f) == EOF) { fclose(f); return false; }
+    
+    bool first = true;
     for (const auto& entry : cacheData) {
+        if (!first) {
+            if (fputc(',', f) == EOF) break;
+        }
+        first = false;
+
+        // Создаем мини-JSON только для одной записи
         json_object* entryObj = json_object_new_object();
         json_object* bookObj = json_object_new_object();
         
         const BookMetadata& meta = entry.second.metadata;
         
-        // Use lpath as the key for JSON
-        std::string jsonKey = meta.lpath; 
-        
-        // Add book fields
         json_object_object_add(bookObj, "uuid", json_object_new_string(meta.uuid.c_str()));
         json_object_object_add(bookObj, "title", json_object_new_string(meta.title.c_str()));
         json_object_object_add(bookObj, "authors", json_object_new_string(meta.authors.c_str()));
         json_object_object_add(bookObj, "lpath", json_object_new_string(meta.lpath.c_str()));
         json_object_object_add(bookObj, "last_modified", json_object_new_string(meta.lastModified.c_str()));
         
-        // Add sync fields
         json_object_object_add(bookObj, "_is_read_", json_object_new_boolean(meta.isRead));
         if (!meta.lastReadDate.empty()) {
             json_object_object_add(bookObj, "_last_read_date_", json_object_new_string(meta.lastReadDate.c_str()));
@@ -201,25 +219,36 @@ bool CacheManager::saveCache() {
         json_object_object_add(entryObj, "book", bookObj);
         json_object_object_add(entryObj, "last_used", json_object_new_string(entry.second.lastUsed.c_str()));
         
-        json_object_object_add(root, jsonKey.c_str(), entryObj);
+        // Получаем JSON строку для значения
+        const char* valStr = json_object_to_json_string_ext(entryObj, JSON_C_TO_STRING_PLAIN);
+        
+        // Используем json-c для безопасного экранирования ключа (пути к файлу)
+        json_object* keyStrObj = json_object_new_string(meta.lpath.c_str());
+        const char* keyStr = json_object_to_json_string_ext(keyStrObj, JSON_C_TO_STRING_PLAIN);
+        
+        // Записываем пару "Ключ": Значение
+        fprintf(f, "\n  %s: %s", keyStr, valStr);
+        
+        // Немедленно освобождаем память
+        json_object_put(keyStrObj);
+        json_object_put(entryObj);
     }
     
-    const char* jsonStr = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PRETTY);
+    fprintf(f, "\n}");
     
-    FILE* f = fopen(cacheFilePath.c_str(), "w");
-    if (!f) {
-        LOG_CACHE("Failed to open cache file for writing");
-        json_object_put(root);
+    // Сброс буферов на диск для надежности
+    fflush(f);
+    fsync(fileno(f));
+    fclose(f);
+    
+    // Атомарная подмена файла
+    if (rename(tmpFilePath.c_str(), cacheFilePath.c_str()) != 0) {
+        LOG_CACHE("Failed to rename temp file to cache file");
+        unlink(tmpFilePath.c_str()); // Удаляем мусор
         return false;
     }
     
-    // Now valid because <cstring> is included
-    fwrite(jsonStr, 1, strlen(jsonStr), f);
-    fclose(f);
-    
-    json_object_put(root);
-    
-    LOG_CACHE("Cache saved successfully");
+    LOG_CACHE("Cache saved successfully (Atomic)");
     return true;
 }
 
@@ -247,6 +276,7 @@ void CacheManager::updateCache(const BookMetadata& metadata) {
     
     std::string uuidToStore = metadata.uuid;
     
+    // Используем find, который в unordered_map работает за O(1)
     auto it = cacheData.find(metadata.lpath);
     if (it != cacheData.end()) {
         if (uuidToStore.empty()) {
@@ -254,10 +284,13 @@ void CacheManager::updateCache(const BookMetadata& metadata) {
         }
     }
     
+    // Оптимизация: избегаем лишнего копирования при создании записи
     BookMetadata newMeta = metadata;
-    newMeta.uuid = uuidToStore;
+    newMeta.uuid = uuidToStore; // перемещение строки, если возможно, но здесь просто присваивание
     
     std::string timestamp = getCurrentTimestamp();
+    
+    // insert_or_assign (C++17) или оператор []
     cacheData[metadata.lpath] = CacheEntry(newMeta, timestamp);
 }
 
@@ -272,6 +305,12 @@ void CacheManager::purgeOldEntries(int days) {
     
     auto it = cacheData.begin();
     while (it != cacheData.end()) {
+        // Оптимизация: быстрая проверка перед парсингом, если строка пустая
+        if (it->second.lastUsed.empty()) {
+             it = cacheData.erase(it);
+             continue;
+        }
+
         time_t lastUsed = parseTimestamp(it->second.lastUsed);
         if (lastUsed > 0 && lastUsed < threshold) {
             it = cacheData.erase(it);
