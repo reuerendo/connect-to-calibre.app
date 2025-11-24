@@ -107,6 +107,10 @@ static bool isConnecting = false;
 static bool shouldStop = false;
 static volatile bool exitRequested = false;
 
+static pthread_mutex_t bookCountMutex = PTHREAD_MUTEX_INITIALIZER;
+static int pendingBookCount = 0;
+static bool bookCountTimerActive = false;
+
 // Forward declarations
 int mainEventHandler(int type, int par1, int par2);
 void performExit();
@@ -192,6 +196,18 @@ void notifyConnectionFailed(const char* errorMsg) {
     SendEvent(mainEventHandler, EVT_CONNECTION_FAILED, 0, 0);
 }
 
+void showBookCountMessage() {
+    pthread_mutex_lock(&bookCountMutex);
+    
+    if (pendingBookCount > 0) {
+        SendEvent(mainEventHandler, EVT_BOOK_RECEIVED, pendingBookCount, 0);
+        pendingBookCount = 0;
+    }
+    
+    bookCountTimerActive = false;
+    pthread_mutex_unlock(&bookCountMutex);
+}
+
 void* connectionThreadFunc(void* arg) {
     const char* ip = ReadString(appConfig, KEY_IP, DEFAULT_IP);
     int port = ReadInt(appConfig, KEY_PORT, atoi(DEFAULT_PORT));
@@ -243,19 +259,48 @@ void* connectionThreadFunc(void* arg) {
     logMsg("Handshake successful");
     SendEvent(mainEventHandler, EVT_SHOW_TOAST, TOAST_CONNECTED, 0);
     
+    // Reset book count at start of session
+    pthread_mutex_lock(&bookCountMutex);
+    pendingBookCount = 0;
+    bookCountTimerActive = false;
+    pthread_mutex_unlock(&bookCountMutex);
+    
     // Handle messages with callback that tracks book additions
     protocol->handleMessages([](const std::string& status) {
         if (status == "BOOK_SAVED") {
-            // Send event with current book count
+            pthread_mutex_lock(&bookCountMutex);
+            
             if (protocol) {
-                int count = protocol->getBooksReceivedCount();
-                logMsg("Book received, total count: %d", count);
-                SendEvent(mainEventHandler, EVT_BOOK_RECEIVED, count, 0);
+                pendingBookCount = protocol->getBooksReceivedCount();
+                logMsg("Book received, pending count: %d", pendingBookCount);
+                
+                // Cancel existing timer if active
+                if (bookCountTimerActive) {
+                    ClearTimer((iv_timerproc)showBookCountMessage);
+                }
+                
+                // Start new 1-second timer
+                SetWeakTimer("BookCountTimer", showBookCountMessage, 1000);
+                bookCountTimerActive = true;
             }
+            
+            pthread_mutex_unlock(&bookCountMutex);
         }
     });
     
     logMsg("Disconnecting");
+    
+    // Show any pending book count before disconnect
+    pthread_mutex_lock(&bookCountMutex);
+    if (bookCountTimerActive) {
+        ClearTimer((iv_timerproc)showBookCountMessage);
+        bookCountTimerActive = false;
+    }
+    if (pendingBookCount > 0) {
+        SendEvent(mainEventHandler, EVT_BOOK_RECEIVED, pendingBookCount, 0);
+        pendingBookCount = 0;
+    }
+    pthread_mutex_unlock(&bookCountMutex);
     
     protocol->disconnect();
     networkManager->disconnect();
@@ -409,8 +454,15 @@ void performExit() {
     
     exitRequested = true;
     
-    // Clear the start timer if we exit immediately
+    // Clear all timers
     ClearTimer((iv_timerproc)connectionTimerFunc);
+    
+    pthread_mutex_lock(&bookCountMutex);
+    if (bookCountTimerActive) {
+        ClearTimer((iv_timerproc)showBookCountMessage);
+        bookCountTimerActive = false;
+    }
+    pthread_mutex_unlock(&bookCountMutex);
     
     stopConnection();
     
@@ -469,8 +521,8 @@ int mainEventHandler(int type, int par1, int par2) {
             } else {
                 snprintf(msgBuf, sizeof(msgBuf), "%d books added", par1);
             }
-            Message(ICON_INFORMATION, "Calibre", msgBuf, 2000);
-            logMsg("Showing book received message: %s", msgBuf);
+            Message(ICON_INFORMATION, "Calibre", msgBuf, 3000);
+            logMsg("Books received: %d", par1);
             break;
         }
 
@@ -496,6 +548,14 @@ int mainEventHandler(int type, int par1, int par2) {
         case EVT_EXIT:
             if (!exitRequested) {
                 exitRequested = true;
+                
+                pthread_mutex_lock(&bookCountMutex);
+                if (bookCountTimerActive) {
+                    ClearTimer((iv_timerproc)showBookCountMessage);
+                    bookCountTimerActive = false;
+                }
+                pthread_mutex_unlock(&bookCountMutex);
+                
                 stopConnection();
                 saveAndCloseConfig();
                 
