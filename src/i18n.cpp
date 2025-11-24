@@ -2,6 +2,9 @@
 #include "i18n.h"
 #include <string.h>
 
+// Explicitly declare GetLang to ensure visibility, as it is missing from inkview.h
+extern "C" int GetLang(void);
+
 // Translation table: [language][string_id]
 static const char* translations[][STR_COUNT] = {
     // English
@@ -127,7 +130,7 @@ static LanguageCode mapPocketbookLanguage(int pbLang) {
 }
 
 void i18n_init() {
-    // Get system language from Pocketbook
+    // Get system language from Pocketbook using the extern'd GetLang function
     int systemLang = GetLang();
     currentLanguage = mapPocketbookLanguage(systemLang);
 }
@@ -149,4 +152,3 @@ void i18n_set_language(LanguageCode lang) {
 LanguageCode i18n_get_language() {
     return currentLanguage;
 }
-
