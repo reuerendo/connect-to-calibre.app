@@ -43,14 +43,14 @@ static const char* translations[][STR_COUNT] = {
         "Подключено",                      // STR_CONNECTED
         "Отключено",                       // STR_DISCONNECTED
         "Синхронизация завершена",         // STR_SYNC_COMPLETE
-        "Пакетная синхронизация завершена", // STR_BATCH_SYNC_FINISHED
+        "Передача файлов синхронизация завершена", // STR_BATCH_SYNC_FINISHED
         "книга",                           // STR_BOOK_SINGULAR
         "книг",                            // STR_BOOKS_PLURAL
         "Получение...",                    // STR_RECEIVING
         "Подключено (ожидание)",           // STR_CONNECTED_IDLE
         "Отмена",                          // STR_CANCEL
         "Повтор",                          // STR_RETRY
-        "Не удалось подключиться к серверу Calibre", // STR_FAILED_CONNECT_SERVER
+        "Не удалось подключиться к Calibre", // STR_FAILED_CONNECT_SERVER
         "Проверьте IP-адрес и порт",       // STR_CHECK_IP_PORT
         "Ошибка рукопожатия",              // STR_HANDSHAKE_FAILED
         "Не удалось подключиться к WiFi сети", // STR_WIFI_CONNECT_FAILED
@@ -62,21 +62,21 @@ static const char* translations[][STR_COUNT] = {
         "     IP-адреса",                  // STR_IP_ADDRESS
         "     Порт",                       // STR_PORT
         "     Пароль",                     // STR_PASSWORD
-        "     Колонка статусу читання",    // STR_READ_COLUMN
-        "     Колонка дати читання",       // STR_READ_DATE_COLUMN
-        "     Колонка улюбленого",         // STR_FAVORITE_COLUMN
+        "     Стовпчик статусу читання",    // STR_READ_COLUMN
+        "     Стовпчик дати читання",       // STR_READ_DATE_COLUMN
+        "     Стовпчик улюбленого",         // STR_FAVORITE_COLUMN
         "Помилка підключення",             // STR_CONNECTION_FAILED
         "Підключено",                      // STR_CONNECTED
         "Відключено",                      // STR_DISCONNECTED
         "Синхронізація завершена",         // STR_SYNC_COMPLETE
-        "Пакетну синхронізацію завершено", // STR_BATCH_SYNC_FINISHED
+        "Передача файлів завершена", // STR_BATCH_SYNC_FINISHED
         "книга",                           // STR_BOOK_SINGULAR
         "книг",                            // STR_BOOKS_PLURAL
         "Отримання...",                    // STR_RECEIVING
         "Підключено (очікування)",         // STR_CONNECTED_IDLE
         "Скасувати",                       // STR_CANCEL
         "Повтор",                          // STR_RETRY
-        "Не вдалося підключитися до сервера Calibre", // STR_FAILED_CONNECT_SERVER
+        "Не вдалося підключитися до Calibre", // STR_FAILED_CONNECT_SERVER
         "Перевірте IP-адресу та порт",     // STR_CHECK_IP_PORT
         "Помилка рукостискання",           // STR_HANDSHAKE_FAILED
         "Не вдалося підключитися до WiFi мережі", // STR_WIFI_CONNECT_FAILED
@@ -112,37 +112,23 @@ static const char* translations[][STR_COUNT] = {
 
 static LanguageCode currentLanguage = LANG_ENGLISH;
 
-// Map Pocketbook language codes (string) to our enum
-static LanguageCode mapPocketbookLanguage(const char* lang) {
-    if (!lang) {
-        return LANG_ENGLISH;
+// Map Pocketbook language codes to our enum
+static LanguageCode mapPocketbookLanguage(int pbLang) {
+    switch (pbLang) {
+        case 2:  // Russian
+            return LANG_RUSSIAN;
+        case 27: // Ukrainian
+            return LANG_UKRAINIAN;
+        case 7:  // Spanish
+            return LANG_SPANISH;
+        default:
+            return LANG_ENGLISH;
     }
-    
-    // Check start of string to handle codes like "ru", "ru_RU", etc.
-    if (strncmp(lang, "ru", 2) == 0) {
-        return LANG_RUSSIAN;
-    }
-    if (strncmp(lang, "uk", 2) == 0) {
-        return LANG_UKRAINIAN;
-    }
-    if (strncmp(lang, "es", 2) == 0) {
-        return LANG_SPANISH;
-    }
-    
-    return LANG_ENGLISH;
 }
 
 void i18n_init() {
-    const char* systemLang = "en";
-    
-    // Получаем глобальную конфигурацию
-    iconfig *globalCfg = GetGlobalConfig();
-    
-    // Если конфиг доступен, читаем параметр "language", по умолчанию "en"
-    if (globalCfg) {
-        systemLang = ReadString(globalCfg, "language", "en");
-    }
-
+    // Get system language from Pocketbook
+    int systemLang = GetLang();
     currentLanguage = mapPocketbookLanguage(systemLang);
 }
 
