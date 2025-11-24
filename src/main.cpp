@@ -515,7 +515,7 @@ int mainEventHandler(int type, int par1, int par2) {
             SoftUpdate();
             
             ClearTimer((iv_timerproc)finalSyncMessageTimer);
-            SetWeakTimer("SyncFinalize", (iv_timerproc)finalSyncMessageTimer, 100);
+            SetWeakTimer("SyncFinalize", (iv_timerproc)finalSyncMessageTimer, 500);
             
             break;
         }
