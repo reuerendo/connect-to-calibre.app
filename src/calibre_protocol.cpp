@@ -407,8 +407,9 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
                 break;
                 
             case BOOK_DONE:
-                logProto(LOG_INFO, "Received BOOK_DONE");
-                break;
+				logProto(LOG_INFO, "Received BOOK_DONE - batch transfer complete");
+				statusCallback("BATCH_COMPLETE");
+				break;
                 
             case NOOP: {
                 handleNoop(args);
