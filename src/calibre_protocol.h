@@ -8,7 +8,6 @@
 #include <functional>
 #include <cstdio> 
 
-// Forward declarations
 struct json_object;
 
 class CalibreProtocol {
@@ -36,7 +35,7 @@ private:
     std::string errorMessage;
     std::vector<BookMetadata> sessionBooks;
     
-    // Настройки столбцов Calibre
+    // Calibre sync column configuration
     std::string readColumn;
     std::string readDateColumn;
     std::string favoriteColumn;
