@@ -1007,23 +1007,29 @@ bool CalibreProtocol::handleDeleteBook(json_object* args) {
     }
     
     int count = json_object_array_length(lpathsObj);
+    logProto(LOG_INFO, "Deleting %d books", count);
+    
     for (int i = 0; i < count; i++) {
         json_object* lpathObj = json_object_array_get_idx(lpathsObj, i);
         std::string lpath = json_object_get_string(lpathObj);
+        
+        logProto(LOG_DEBUG, "Deleting book %d/%d: %s", i+1, count, lpath.c_str());
         
         bookManager->deleteBook(lpath);
         
         if (cacheManager) {
             cacheManager->removeFromCache(lpath);
         }
-            
-        json_object* response = json_object_new_object();
-        json_object_object_add(response, "uuid", json_object_new_string("")); 
-        sendOKResponse(response);
-        freeJSON(response);
     }
     
-    return true;
+    // Send final OK response after all deletions
+    json_object* response = json_object_new_object();
+    json_object_object_add(response, "deleted_count", json_object_new_int(count));
+    bool result = sendOKResponse(response);
+    freeJSON(response);
+    
+    logProto(LOG_INFO, "Delete operation completed, response sent");
+    return result;
 }
 
 bool CalibreProtocol::handleGetBookFileSegment(json_object* args) {
