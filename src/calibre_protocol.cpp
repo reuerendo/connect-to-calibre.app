@@ -1007,7 +1007,7 @@ bool CalibreProtocol::handleDeleteBook(json_object* args) {
     }
     
     int count = json_object_array_length(lpathsObj);
-    logProto(LOG_INFO, "Deleting %d books", count);
+    logProto(LOG_INFO, "Deleting %d book(s)", count);
     
     for (int i = 0; i < count; i++) {
         json_object* lpathObj = json_object_array_get_idx(lpathsObj, i);
@@ -1015,21 +1015,52 @@ bool CalibreProtocol::handleDeleteBook(json_object* args) {
         
         logProto(LOG_DEBUG, "Deleting book %d/%d: %s", i+1, count, lpath.c_str());
         
+        // Find UUID before deletion for response
+        std::string deletedUuid = "";
+        for (const auto& book : sessionBooks) {
+            if (book.lpath == lpath) {
+                deletedUuid = book.uuid;
+                break;
+            }
+        }
+        
+        // If not found in session, try cache
+        if (deletedUuid.empty() && cacheManager) {
+            deletedUuid = cacheManager->getUuidForLpath(lpath);
+        }
+        
+        // Perform deletion
         bookManager->deleteBook(lpath);
         
+        // Remove from cache
         if (cacheManager) {
             cacheManager->removeFromCache(lpath);
         }
+        
+        // Remove from session books
+        sessionBooks.erase(
+            std::remove_if(sessionBooks.begin(), sessionBooks.end(),
+                [&lpath](const BookMetadata& b) { return b.lpath == lpath; }),
+            sessionBooks.end()
+        );
+        
+        // Send individual response for each deleted book
+        json_object* response = json_object_new_object();
+        json_object_object_add(response, "uuid", 
+            json_object_new_string(deletedUuid.empty() ? "" : deletedUuid.c_str()));
+        
+        if (!sendOKResponse(response)) {
+            freeJSON(response);
+            logProto(LOG_ERROR, "Failed to send delete confirmation for book %d", i+1);
+            return false;
+        }
+        freeJSON(response);
+        
+        logProto(LOG_DEBUG, "Delete confirmation sent for book %d/%d", i+1, count);
     }
     
-    // Send final OK response after all deletions
-    json_object* response = json_object_new_object();
-    json_object_object_add(response, "deleted_count", json_object_new_int(count));
-    bool result = sendOKResponse(response);
-    freeJSON(response);
-    
-    logProto(LOG_INFO, "Delete operation completed, response sent");
-    return result;
+    logProto(LOG_INFO, "Successfully deleted %d book(s)", count);
+    return true;
 }
 
 bool CalibreProtocol::handleGetBookFileSegment(json_object* args) {
