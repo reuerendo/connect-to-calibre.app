@@ -5,6 +5,9 @@ project(connect-to-calibre)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Set source encoding
+add_compile_options(-finput-charset=UTF-8 -fexec-charset=UTF-8)
+
 # PocketBook SDK path
 set(TOOLCHAIN_PATH "${CMAKE_SOURCE_DIR}/SDK/SDK_6.3.0/SDK-B288" CACHE PATH "Path to PocketBook SDK")
 
@@ -26,19 +29,20 @@ link_directories(
     ${TOOLCHAIN_PATH}/usr/arm-obreey-linux-gnueabi/sysroot/usr/lib
 )
 
-# Source files - ADDED cache_manager.cpp
+# Source files
 set(SOURCES
     src/main.cpp
     src/network.cpp
     src/calibre_protocol.cpp
     src/book_manager.cpp
     src/cache_manager.cpp
+    src/i18n.cpp
 )
 
 # Create executable
 add_executable(${PROJECT_NAME} ${SOURCES})
 
-# Link libraries - ADDED ssl (for OpenSSL SHA)
+# Link libraries
 target_link_libraries(${PROJECT_NAME}
     inkview
     freetype
