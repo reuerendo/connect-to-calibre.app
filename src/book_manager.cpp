@@ -204,6 +204,8 @@ std::string BookManager::getBookFilePath(const std::string& lpath) {
     return (booksDir.back() == '/') ? booksDir + lpath : booksDir + "/" + lpath;
 }
 
+// В book_manager.cpp
+
 bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadata& metadata, int profileId) {
     int completed = metadata.isRead ? 1 : 0;
     int favorite = metadata.isFavorite ? 1 : 0;
@@ -213,8 +215,7 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
         completedTs = fastParseIsoTime(metadata.lastReadDate);
     }
 
-    // Используем UPSERT (INSERT OR REPLACE) логику или UPDATE, если запись существует
-    // Проверяем существование
+    // Check if record exists
     const char* checkSql = "SELECT 1 FROM books_settings WHERE bookid = ? AND profileid = ?";
     bool exists = false;
     
@@ -231,33 +232,29 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
             // Book is READ: set progress to 100%
             static const char* updateSqlRead = 
                 "UPDATE books_settings "
-                "SET completed = ?, favorite = ?, completed_ts = ?, cpage = ?, npage = ? "
+                "SET completed = ?, favorite = ?, completed_ts = ?, cpage = 100, npage = 100 "
                 "WHERE bookid = ? AND profileid = ?";
                 
             if (sqlite3_prepare_v2(db, updateSqlRead, -1, &stmt, nullptr) == SQLITE_OK) {
                 sqlite3_bind_int(stmt, 1, completed);
                 sqlite3_bind_int(stmt, 2, favorite);
                 sqlite3_bind_int64(stmt, 3, completedTs);
-                sqlite3_bind_int(stmt, 4, 100);
-                sqlite3_bind_int(stmt, 5, 100);
-                sqlite3_bind_int(stmt, 6, bookId);
-                sqlite3_bind_int(stmt, 7, profileId);
+                sqlite3_bind_int(stmt, 4, bookId);
+                sqlite3_bind_int(stmt, 5, profileId);
                 sqlite3_step(stmt);
                 sqlite3_finalize(stmt);
             }
         } else {
-            // Book is NOT read: preserve reading progress
+            // Book is NOT read: preserve existing reading progress, don't force reset
             static const char* updateSqlUnread = 
                 "UPDATE books_settings "
-                "SET completed = ?, favorite = ?, completed_ts = ? "
+                "SET completed = 0, favorite = ?, completed_ts = 0 "
                 "WHERE bookid = ? AND profileid = ?";
                 
             if (sqlite3_prepare_v2(db, updateSqlUnread, -1, &stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_int(stmt, 1, completed);
-                sqlite3_bind_int(stmt, 2, favorite);
-                sqlite3_bind_int64(stmt, 3, completedTs);
-                sqlite3_bind_int(stmt, 4, bookId);
-                sqlite3_bind_int(stmt, 5, profileId);
+                sqlite3_bind_int(stmt, 1, favorite);
+                sqlite3_bind_int(stmt, 2, bookId);
+                sqlite3_bind_int(stmt, 3, profileId);
                 sqlite3_step(stmt);
                 sqlite3_finalize(stmt);
             }
