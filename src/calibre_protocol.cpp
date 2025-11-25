@@ -667,7 +667,6 @@ bool CalibreProtocol::handleSendBooklists(json_object* args) {
             logProto(LOG_DEBUG, "Collection '%s': %d to add, %d to remove", 
                     collectionName.c_str(), (int)toAdd.size(), (int)toRemove.size());
             
-            // Batch insert
             if (!toAdd.empty()) {
                 const char* insertSql = 
                     "INSERT OR IGNORE INTO bookshelfs_books (bookshelfid, bookid, is_deleted, ts) "
@@ -687,7 +686,6 @@ bool CalibreProtocol::handleSendBooklists(json_object* args) {
                 }
             }
             
-            // Batch delete
             if (!toRemove.empty()) {
                 const char* deleteSql = 
                     "UPDATE bookshelfs_books SET is_deleted = 1, ts = ? "
@@ -742,300 +740,459 @@ bool CalibreProtocol::handleSendBooklists(json_object* args) {
         StmtHandle deleteStmt;
         if (sqlite3_prepare_v2(db, deleteSql, -1, deleteStmt.ptr(), nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(deleteStmt.get(), 1, now);
-            sqlite3_bind_text(deleteStmt.get(), 2, collectionName.c_str
-			(), -1, SQLITE_TRANSIENT);
-sqlite3_step(deleteStmt.get());
-}
-}
-
-sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
-
-bookManager->closeDB(db);
-
-logProto(LOG_INFO, "Collection sync completed");
-return true;
+            sqlite3_bind_text(deleteStmt.get(), 2, collectionName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_step(deleteStmt.get());
+        }
+    }
+    
+    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
+    
+    bookManager->closeDB(db);
+    
+    logProto(LOG_INFO, "Collection sync completed");
+    return true;
 }
 
 std::string CalibreProtocol::parseJsonStringOrArray(json_object* val) {
-if (!val || json_object_get_type(val) == json_type_null) return "";
-
-enum json_type type = json_object_get_type(val);
-
-if (type == json_type_string) {
-    return safeGetJsonString(val);
-} 
-else if (type == json_type_array) {
-    std::string result;
-    result.reserve(256);
-    int len = json_object_array_length(val);
-    for (int i = 0; i < len; i++) {
-        json_object* item = json_object_array_get_idx(val, i);
-        if (i > 0) result += ", ";
-        const char* str = json_object_get_string(item);
-        if (str) {
-            result += str;
+    if (!val || json_object_get_type(val) == json_type_null) return "";
+    
+    enum json_type type = json_object_get_type(val);
+    
+    if (type == json_type_string) {
+        return safeGetJsonString(val);
+    } 
+    else if (type == json_type_array) {
+        std::string result;
+        result.reserve(256);
+        int len = json_object_array_length(val);
+        for (int i = 0; i < len; i++) {
+            json_object* item = json_object_array_get_idx(val, i);
+            if (i > 0) result += ", ";
+            const char* str = json_object_get_string(item);
+            if (str) {
+                result += str;
+            }
         }
+        return result;
     }
-    return result;
-}
-
-return "";
-
+    
+    return "";
 }
 
 static bool getUserMetadataBool(json_object* userMeta, const std::string& colName) {
-if (!userMeta || colName.empty()) return false;
-
-json_object* colObj = NULL;
-if (json_object_object_get_ex(userMeta, colName.c_str(), &colObj)) {
-    json_object* valObj = NULL;
-    if (json_object_object_get_ex(colObj, "#value#", &valObj)) {
-        return json_object_get_boolean(valObj);
-    }
-}
-return false;
-
-}
-
-static std::string getUserMetadataString(json_object* userMeta, const std::string& colName) {
-if (!userMeta || colName.empty()) return "";
-
-json_object* colObj = NULL;
-if (json_object_object_get_ex(userMeta, colName.c_str(), &colObj)) {
-    json_object* valObj = NULL;
-    if (json_object_object_get_ex(colObj, "#value#", &valObj)) {
-        const char* str = json_object_get_string(valObj);
-        return str ? std::string(str) : "";
-    }
-}
-return "";
-
-}
-
-BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
-BookMetadata metadata;
-json_object* val = NULL;
-
-if (json_object_object_get_ex(obj, "uuid", &val)) metadata.uuid = safeGetJsonString(val);
-if (json_object_object_get_ex(obj, "title", &val)) metadata.title = safeGetJsonString(val);
-if (json_object_object_get_ex(obj, "authors", &val)) metadata.authors = parseJsonStringOrArray(val);
-if (json_object_object_get_ex(obj, "author_sort", &val)) metadata.authorSort = safeGetJsonString(val);
-if (json_object_object_get_ex(obj, "lpath", &val)) metadata.lpath = safeGetJsonString(val);
-if (json_object_object_get_ex(obj, "series", &val)) metadata.series = safeGetJsonString(val);
-if (json_object_object_get_ex(obj, "series_index", &val)) metadata.seriesIndex = json_object_get_int(val);
-if (json_object_object_get_ex(obj, "size", &val)) metadata.size = json_object_get_int64(val);
-if (json_object_object_get_ex(obj, "last_modified", &val)) metadata.lastModified = safeGetJsonString(val);
-
-json_object* userMeta = NULL;
-if (json_object_object_get_ex(obj, "user_metadata", &userMeta)) {
-    if (!readColumn.empty()) {
-        metadata.isRead = getUserMetadataBool(userMeta, readColumn);
-    }
+    if (!userMeta || colName.empty()) return false;
     
-    if (!readDateColumn.empty()) {
-        metadata.lastReadDate = getUserMetadataString(userMeta, readDateColumn);
-    }
-    
-    if (!favoriteColumn.empty()) {
-        metadata.isFavorite = getUserMetadataBool(userMeta, favoriteColumn);
-    }
-}
-
-return metadata;
-
-}
-
-json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
-json_object* obj = json_object_new_object();
-
-json_object_object_add(obj, "uuid", json_object_new_string(metadata.uuid.c_str()));
-json_object_object_add(obj, "title", json_object_new_string(metadata.title.c_str()));
-json_object_object_add(obj, "authors", json_object_new_string(metadata.authors.c_str()));
-json_object_object_add(obj, "lpath", json_object_new_string(metadata.lpath.c_str()));
-json_object_object_add(obj, "last_modified", json_object_new_string(metadata.lastModified.c_str()));
-json_object_object_add(obj, "size", json_object_new_int64(metadata.size));
-
-if (!metadata.series.empty()) {
-    json_object_object_add(obj, "series", json_object_new_string(metadata.series.c_str()));
-    json_object_object_add(obj, "series_index", json_object_new_int(metadata.seriesIndex));
-}
-
-json_object_object_add(obj, "_is_read_", json_object_new_boolean(metadata.isRead));
-json_object_object_add(obj, "_sync_type_", json_object_new_int(1));
-
-if (!metadata.lastReadDate.empty()) {
-    json_object_object_add(obj, "_last_read_date_", 
-                          json_object_new_string(metadata.lastReadDate.c_str()));
-}
-
-return obj;
-
-}
-
-bool CalibreProtocol::handleSendBook(json_object* args) {
-logProto(LOG_INFO, "Starting handleSendBook");
-
-json_object* metadataObj = NULL;
-json_object* lpathObj = NULL;
-json_object* lengthObj = NULL;
-
-if (!json_object_object_get_ex(args, "lpath", &lpathObj) ||
-    !json_object_object_get_ex(args, "length", &lengthObj) ||
-    !json_object_object_get_ex(args, "metadata", &metadataObj)) {
-    return sendErrorResponse("Missing required fields");
-}
-
-currentBookLpath = json_object_get_string(lpathObj);
-currentBookLength = json_object_get_int64(lengthObj);
-currentBookReceived = 0;
-
-logProto(LOG_INFO, "Receiving book: %s (%lld bytes)", 
-        currentBookLpath.c_str(), currentBookLength);
-
-BookMetadata metadata = jsonToMetadata(metadataObj);
-metadata.lpath = currentBookLpath;
-metadata.size = currentBookLength;
-
-std::string filePath = bookManager->getBookFilePath(currentBookLpath);
-logProto(LOG_DEBUG, "Target path: %s", filePath.c_str());
-
-size_t pos = filePath.rfind('/');
-if (pos != std::string::npos) {
-    std::string dir = filePath.substr(0, pos);
-    if (recursiveMkdir(dir) != 0) {
-        logProto(LOG_ERROR, "Failed to create directory structure for book");
-        return sendErrorResponse("Failed to create directory");
-    }
-}
-
-currentBookFile = iv_fopen(filePath.c_str(), "wb");
-if (!currentBookFile) {
-    logProto(LOG_ERROR, "Failed to open file for writing!");
-    return sendErrorResponse("Failed to create book file");
-}
-
-json_object* response = json_object_new_object();
-json_object_object_add(response, "lpath", json_object_new_string(currentBookLpath.c_str()));
-
-if (!sendOKResponse(response)) {
-    logProto(LOG_ERROR, "Failed to send OK response");
-    freeJSON(response);
-    if (currentBookFile) {
-        iv_fclose(currentBookFile);
-        currentBookFile = nullptr;
+    json_object* colObj = NULL;
+    if (json_object_object_get_ex(userMeta, colName.c_str(), &colObj)) {
+        json_object* valObj = NULL;
+        if (json_object_object_get_ex(colObj, "#value#", &valObj)) {
+            return json_object_get_boolean(valObj);
+        }
     }
     return false;
 }
-freeJSON(response);
 
-std::vector<char> buffer(BASE_PACKET_LEN);
-
-logProto(LOG_DEBUG, "Starting binary transfer...");
-
-while (currentBookReceived < currentBookLength) {
-    size_t toRead = std::min((size_t)(currentBookLength - currentBookReceived), 
-                            (size_t)BASE_PACKET_LEN);
+static std::string getUserMetadataString(json_object* userMeta, const std::string& colName) {
+    if (!userMeta || colName.empty()) return "";
     
-    if (!network->receiveBinaryData(buffer.data(), toRead)) {
-        logProto(LOG_ERROR, "Network error during file transfer");
+    json_object* colObj = NULL;
+    if (json_object_object_get_ex(userMeta, colName.c_str(), &colObj)) {
+        json_object* valObj = NULL;
+        if (json_object_object_get_ex(colObj, "#value#", &valObj)) {
+            const char* str = json_object_get_string(valObj);
+            return str ? std::string(str) : "";
+        }
+    }
+    return "";
+}
+
+BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
+    BookMetadata metadata;
+    json_object* val = NULL;
+    
+    if (json_object_object_get_ex(obj, "uuid", &val)) metadata.uuid = safeGetJsonString(val);
+    if (json_object_object_get_ex(obj, "title", &val)) metadata.title = safeGetJsonString(val);
+    if (json_object_object_get_ex(obj, "authors", &val)) metadata.authors = parseJsonStringOrArray(val);
+    if (json_object_object_get_ex(obj, "author_sort", &val)) metadata.authorSort = safeGetJsonString(val);
+    if (json_object_object_get_ex(obj, "lpath", &val)) metadata.lpath = safeGetJsonString(val);
+    if (json_object_object_get_ex(obj, "series", &val)) metadata.series = safeGetJsonString(val);
+    if (json_object_object_get_ex(obj, "series_index", &val)) metadata.seriesIndex = json_object_get_int(val);
+    if (json_object_object_get_ex(obj, "size", &val)) metadata.size = json_object_get_int64(val);
+    if (json_object_object_get_ex(obj, "last_modified", &val)) metadata.lastModified = safeGetJsonString(val);
+
+    json_object* userMeta = NULL;
+    if (json_object_object_get_ex(obj, "user_metadata", &userMeta)) {
+        if (!readColumn.empty()) {
+            metadata.isRead = getUserMetadataBool(userMeta, readColumn);
+        }
+        
+        if (!readDateColumn.empty()) {
+            metadata.lastReadDate = getUserMetadataString(userMeta, readDateColumn);
+        }
+        
+        if (!favoriteColumn.empty()) {
+            metadata.isFavorite = getUserMetadataBool(userMeta, favoriteColumn);
+        }
+    }
+    
+    return metadata;
+}
+
+json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
+    json_object* obj = json_object_new_object();
+    
+    json_object_object_add(obj, "uuid", json_object_new_string(metadata.uuid.c_str()));
+    json_object_object_add(obj, "title", json_object_new_string(metadata.title.c_str()));
+    json_object_object_add(obj, "authors", json_object_new_string(metadata.authors.c_str()));
+    json_object_object_add(obj, "lpath", json_object_new_string(metadata.lpath.c_str()));
+    json_object_object_add(obj, "last_modified", json_object_new_string(metadata.lastModified.c_str()));
+    json_object_object_add(obj, "size", json_object_new_int64(metadata.size));
+    
+    if (!metadata.series.empty()) {
+        json_object_object_add(obj, "series", json_object_new_string(metadata.series.c_str()));
+        json_object_object_add(obj, "series_index", json_object_new_int(metadata.seriesIndex));
+    }
+    
+    json_object_object_add(obj, "_is_read_", json_object_new_boolean(metadata.isRead));
+    json_object_object_add(obj, "_sync_type_", json_object_new_int(1));
+    
+    if (!metadata.lastReadDate.empty()) {
+        json_object_object_add(obj, "_last_read_date_", 
+                              json_object_new_string(metadata.lastReadDate.c_str()));
+    }
+    
+    return obj;
+}
+
+bool CalibreProtocol::handleSendBook(json_object* args) {
+    logProto(LOG_INFO, "Starting handleSendBook");
+    
+    json_object* metadataObj = NULL;
+    json_object* lpathObj = NULL;
+    json_object* lengthObj = NULL;
+    
+    if (!json_object_object_get_ex(args, "lpath", &lpathObj) ||
+        !json_object_object_get_ex(args, "length", &lengthObj) ||
+        !json_object_object_get_ex(args, "metadata", &metadataObj)) {
+        return sendErrorResponse("Missing required fields");
+    }
+    
+    currentBookLpath = json_object_get_string(lpathObj);
+    currentBookLength = json_object_get_int64(lengthObj);
+    currentBookReceived = 0;
+    
+    logProto(LOG_INFO, "Receiving book: %s (%lld bytes)", 
+            currentBookLpath.c_str(), currentBookLength);
+    
+    BookMetadata metadata = jsonToMetadata(metadataObj);
+    metadata.lpath = currentBookLpath;
+    metadata.size = currentBookLength;
+    
+    std::string filePath = bookManager->getBookFilePath(currentBookLpath);
+    logProto(LOG_DEBUG, "Target path: %s", filePath.c_str());
+    
+    size_t pos = filePath.rfind('/');
+    if (pos != std::string::npos) {
+        std::string dir = filePath.substr(0, pos);
+        if (recursiveMkdir(dir) != 0) {
+            logProto(LOG_ERROR, "Failed to create directory structure for book");
+            return sendErrorResponse("Failed to create directory");
+        }
+    }
+    
+    currentBookFile = iv_fopen(filePath.c_str(), "wb");
+    if (!currentBookFile) {
+        logProto(LOG_ERROR, "Failed to open file for writing!");
+        return sendErrorResponse("Failed to create book file");
+    }
+    
+    json_object* response = json_object_new_object();
+    json_object_object_add(response, "lpath", json_object_new_string(currentBookLpath.c_str()));
+    
+    if (!sendOKResponse(response)) {
+        logProto(LOG_ERROR, "Failed to send OK response");
+        freeJSON(response);
         if (currentBookFile) {
             iv_fclose(currentBookFile);
             currentBookFile = nullptr;
         }
         return false;
     }
+    freeJSON(response);
     
-    size_t written = fwrite(buffer.data(), 1, toRead, currentBookFile);
-    if (written != toRead) {
-        logProto(LOG_ERROR, "Disk write error");
-        if (currentBookFile) {
-            iv_fclose(currentBookFile);
-            currentBookFile = nullptr;
+    std::vector<char> buffer(BASE_PACKET_LEN);
+    
+    logProto(LOG_DEBUG, "Starting binary transfer...");
+    
+    while (currentBookReceived < currentBookLength) {
+        size_t toRead = std::min((size_t)(currentBookLength - currentBookReceived), 
+                                (size_t)BASE_PACKET_LEN);
+        
+        if (!network->receiveBinaryData(buffer.data(), toRead)) {
+            logProto(LOG_ERROR, "Network error during file transfer");
+            if (currentBookFile) {
+                iv_fclose(currentBookFile);
+                currentBookFile = nullptr;
+            }
+            return false;
         }
-        return sendErrorResponse("Failed to write book data");
+        
+        size_t written = fwrite(buffer.data(), 1, toRead, currentBookFile);
+        if (written != toRead) {
+            logProto(LOG_ERROR, "Disk write error");
+            if (currentBookFile) {
+                iv_fclose(currentBookFile);
+                currentBookFile = nullptr;
+            }
+            return sendErrorResponse("Failed to write book data");
+        }
+        
+        currentBookReceived += toRead;
     }
     
-    currentBookReceived += toRead;
-}
-
-logProto(LOG_INFO, "Transfer complete.");
-iv_fclose(currentBookFile);
-currentBookFile = nullptr;
-
-bookManager->addBook(metadata);
-
-if (cacheManager) {
-    cacheManager->updateCache(metadata);
-}
-
-booksReceivedInSession++;
-logProto(LOG_INFO, "Book added to DB and cache.");
-
-return true;
-
-}
-
-bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
-json_object* dataObj = NULL;
-if (!json_object_object_get_ex(args, "data", &dataObj)) {
-return sendErrorResponse("Missing metadata");
-}
-
-BookMetadata metadata = jsonToMetadata(dataObj);
-
-logProto(LOG_INFO, "Syncing metadata for: %s (Read: %d, Date: %s)", 
-         metadata.title.c_str(), metadata.isRead, metadata.lastReadDate.c_str());
-
-if (bookManager->updateBookSync(metadata)) {
-    for(auto& b : sessionBooks) {
-        if (b.lpath == metadata.lpath) { 
-            b.isRead = metadata.isRead;
-            b.isFavorite = metadata.isFavorite;
-            b.lastReadDate = metadata.lastReadDate;
-            b.series = metadata.series;
-            b.seriesIndex = metadata.seriesIndex;
-            break;
-        }
-    }
+    logProto(LOG_INFO, "Transfer complete.");
+    iv_fclose(currentBookFile);
+    currentBookFile = nullptr;
+    
+    bookManager->addBook(metadata);
     
     if (cacheManager) {
         cacheManager->updateCache(metadata);
     }
-} else {
-    logProto(LOG_ERROR, "Warning: Attempted to sync metadata for non-existent book");
+    
+    booksReceivedInSession++;
+    logProto(LOG_INFO, "Book added to DB and cache.");
+    
+    return true;
 }
 
-return true;
-
+bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
+    json_object* dataObj = NULL;
+    if (!json_object_object_get_ex(args, "data", &dataObj)) {
+        return sendErrorResponse("Missing metadata");
+    }
+    
+    BookMetadata metadata = jsonToMetadata(dataObj);
+    
+    logProto(LOG_INFO, "Syncing metadata for: %s (Read: %d, Date: %s)", 
+             metadata.title.c_str(), metadata.isRead, metadata.lastReadDate.c_str());
+    
+    if (bookManager->updateBookSync(metadata)) {
+        for(auto& b : sessionBooks) {
+            if (b.lpath == metadata.lpath) { 
+                b.isRead = metadata.isRead;
+                b.isFavorite = metadata.isFavorite;
+                b.lastReadDate = metadata.lastReadDate;
+                b.series = metadata.series;
+                b.seriesIndex = metadata.seriesIndex;
+                break;
+            }
+        }
+        
+        if (cacheManager) {
+            cacheManager->updateCache(metadata);
+        }
+    } else {
+        logProto(LOG_ERROR, "Warning: Attempted to sync metadata for non-existent book");
+    }
+    
+    return true;
 }
 
 bool CalibreProtocol::handleDeleteBook(json_object* args) {
-json_object* lpathsObj = NULL;
-if (!json_object_object_get_ex(args, "lpaths", &lpathsObj)) {
-return sendErrorResponse("Missing lpaths");
-}
-int count = json_object_array_length(lpathsObj);
-for (int i = 0; i < count; i++) {
-    json_object* lpathObj = json_object_array_get_idx(lpathsObj, i);
-    std::string lpath = json_object_get_string(lpathObj);
-    
-    bookManager->deleteBook(lpath);
-    
-    if (cacheManager) {
-        cacheManager->removeFromCache(lpath);
+    json_object* lpathsObj = NULL;
+    if (!json_object_object_get_ex(args, "lpaths", &lpathsObj)) {
+        return sendErrorResponse("Missing lpaths");
     }
+    
+    int count = json_object_array_length(lpathsObj);
+    for (int i = 0; i < count; i++) {
+        json_object* lpathObj = json_object_array_get_idx(lpathsObj, i);
+        std::string lpath = json_object_get_string(lpathObj);
         
-    json_object* response = json_object_new_object();
-    json_object_object_add(response, "uuid", json_object_new_string("")); 
-    sendOKResponse(response);
-    freeJSON(response);
+        bookManager->deleteBook(lpath);
+        
+        if (cacheManager) {
+            cacheManager->removeFromCache(lpath);
+        }
+            
+        json_object* response = json_object_new_object();
+        json_object_object_add(response, "uuid", json_object_new_string("")); 
+        sendOKResponse(response);
+        freeJSON(response);
+    }
+    
+    return true;
 }
 
-return true;
-}
 bool CalibreProtocol::handleGetBookFileSegment(json_object* args) {
-json_object* lpathObj = NULL;
-if (!json_object_object_get_ex(args, "lpath", &lpathObj)) {
-return sendErrorResponse("Missing lpath");
+    json_object* lpathObj = NULL;
+    if (!json_object_object_get_ex(args, "lpath", &lpathObj)) {
+        return sendErrorResponse("Missing lpath");
+    }
+    
+    std::string lpath = json_object_get_string(lpathObj);
+    std::string filePath = bookManager->getBookFilePath(lpath);
+    
+    FileHandle file(filePath.c_str(), "rb");
+    if (!file) {
+        return sendErrorResponse("Failed to open book file");
+    }
+    
+    fseek(file.get(), 0, SEEK_END);
+    long fileLength = ftell(file.get());
+    fseek(file.get(), 0, SEEK_SET);
+    
+    json_object* response = json_object_new_object();
+    json_object_object_add(response, "fileLength", json_object_new_int64(fileLength));
+    
+    if (!sendOKResponse(response)) {
+        freeJSON(response);
+        return false;
+    }
+    freeJSON(response);
+    
+    std::vector<char> buffer(BASE_PACKET_LEN);
+    
+    while (!feof(file.get())) {
+        size_t read = fread(buffer.data(), 1, BASE_PACKET_LEN, file.get());
+        if (read > 0) {
+            if (!network->sendBinaryData(buffer.data(), read)) {
+                return false;
+            }
+        }
+    }
+    
+    return true;
+}
+
+bool CalibreProtocol::handleDisplayMessage(json_object* args) {
+    json_object* messageObj = NULL;
+    
+    if (json_object_object_get_ex(args, "message", &messageObj)) {
+        Message(ICON_INFORMATION, "Calibre", 
+                json_object_get_string(messageObj), 3000);
+    }
+    
+    return true;
+}
+
+bool CalibreProtocol::handleNoop(json_object* args) {
+    json_object* val = NULL;
+    
+    if (json_object_object_get_ex(args, "ejecting", &val) && json_object_get_boolean(val)) {
+        logProto(LOG_INFO, "Received Eject command");
+        json_object* response = json_object_new_object();
+        sendOKResponse(response);
+        freeJSON(response);
+        return true; 
+    }
+    
+    if (json_object_object_get_ex(args, "priKey", &val)) {
+        int index = json_object_get_int(val);
+        logProto(LOG_DEBUG, "Calibre requested details for book index: %d", index);
+        
+        if (index >= 0 && index < (int)sessionBooks.size()) {
+            json_object* bookJson = metadataToJson(sessionBooks[index]);
+            
+            if (sessionBooks[index].isRead) {
+                json_object_object_add(bookJson, "_is_read_", json_object_new_boolean(true));
+            }
+            
+            sendOKResponse(bookJson);
+            freeJSON(bookJson);
+        } else {
+            logProto(LOG_ERROR, "Error: Requested priKey %d out of bounds", index);
+            json_object* resp = json_object_new_object();
+            sendOKResponse(resp);
+            freeJSON(resp);
+        }
+        return true;
+    }
+    
+    if (json_object_object_get_ex(args, "count", &val)) {
+        logProto(LOG_DEBUG, "Received batch count notification, ignoring response");
+        return true;
+    }
+    
+    json_object* response = json_object_new_object();
+    bool result = sendOKResponse(response);
+    freeJSON(response);
+    return result;
+}
+
+bool CalibreProtocol::sendOKResponse(json_object* data) {
+    std::string jsonStr = jsonToString(data);
+    return network->sendJSON(OK, jsonStr.c_str());
+}
+
+bool CalibreProtocol::sendErrorResponse(const std::string& message) {
+    json_object* error = json_object_new_object();
+    json_object_object_add(error, "message", json_object_new_string(message.c_str()));
+    
+    std::string jsonStr = jsonToString(error);
+    bool result = network->sendJSON(ERROR_OPCODE, jsonStr.c_str());
+    
+    freeJSON(error);
+    return result;
+}
+
+std::string CalibreProtocol::jsonToString(json_object* obj) {
+    const char* str = json_object_to_json_string(obj);
+    return str ? str : "{}";
+}
+
+json_object* CalibreProtocol::parseJSON(const std::string& jsonStr) {
+    size_t dataStart = jsonStr.find(',');
+    if (dataStart == std::string::npos) {
+        return NULL;
+    }
+    
+    size_t dataEnd = jsonStr.rfind(']');
+    if (dataEnd == std::string::npos) {
+        return NULL;
+    }
+    
+    std::string dataStr = jsonStr.substr(dataStart + 1, dataEnd - dataStart - 1);
+    return json_tokener_parse(dataStr.c_str());
+}
+
+void CalibreProtocol::freeJSON(json_object* obj) {
+    if (obj) {
+        json_object_put(obj);
+    }
+}
+
+json_object* CalibreProtocol::cachedMetadataToJson(const BookMetadata& metadata, int index) {
+    json_object* obj = json_object_new_object();
+    
+    json_object_object_add(obj, "priKey", json_object_new_int(index));
+    json_object_object_add(obj, "uuid", json_object_new_string(metadata.uuid.c_str()));
+    json_object_object_add(obj, "lpath", json_object_new_string(metadata.lpath.c_str()));
+    
+    if (!metadata.lastModified.empty()) {
+        json_object_object_add(obj, "last_modified", 
+                              json_object_new_string(metadata.lastModified.c_str()));
+    } else {
+        json_object_object_add(obj, "last_modified", 
+                              json_object_new_string("1970-01-01T00:00:00+00:00"));
+    }
+    
+    std::string ext = "";
+    size_t pos = metadata.lpath.rfind('.');
+    if (pos != std::string::npos) {
+        ext = metadata.lpath.substr(pos + 1);
+    }
+    json_object_object_add(obj, "extension", json_object_new_string(ext.c_str()));
+    
+    json_object_object_add(obj, "_is_read_", json_object_new_boolean(metadata.isRead));
+    json_object_object_add(obj, "_sync_type_", json_object_new_int(1));
+    
+    if (!metadata.lastReadDate.empty()) {
+        json_object_object_add(obj, "_last_read_date_", 
+                              json_object_new_string(metadata.lastReadDate.c_str()));
+    }
+    
+    return obj;
 }
