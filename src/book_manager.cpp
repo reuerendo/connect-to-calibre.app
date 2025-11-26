@@ -553,12 +553,12 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
     int profileId = getCurrentProfileId(db);
     
     static const char* sql = 
-        "SELECT b.id, b.title, b.author, b.series, b.numinseries, b.size, b.updated, "
-        "f.filename, fo.name, bs.completed, bs.favorite, bs.completed_ts "
-        "FROM books_impl b "
-        "JOIN files f ON b.id = f.book_id "
-        "JOIN folders fo ON f.folder_id = fo.id "
-        "LEFT JOIN books_settings bs ON b.id = bs.bookid AND bs.profileid = ?";
+		"SELECT b.id, b.title, b.author, b.series, b.numinseries, b.size, f.modification_time, "
+		"f.filename, fo.name, bs.completed, bs.favorite, bs.completed_ts "
+		"FROM books_impl b "
+		"JOIN files f ON b.id = f.book_id "
+		"JOIN folders fo ON f.folder_id = fo.id "
+		"LEFT JOIN books_settings bs ON b.id = bs.bookid AND bs.profileid = ?";
 
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
@@ -603,8 +603,8 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
                 meta.lastReadDate = formatIsoTime(readTs);
             }
             
-            time_t updated = (time_t)sqlite3_column_int64(stmt, 6);
-            meta.lastModified = formatIsoTime(updated);
+            time_t fileMtime = (time_t)sqlite3_column_int64(stmt, 6);
+			meta.lastModified = formatIsoTime(fileMtime);
 
             books.push_back(std::move(meta));
         }
