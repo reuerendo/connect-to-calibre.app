@@ -23,6 +23,8 @@ static const int PROTOCOL_VERSION = 1;
 enum LogLevel { LOG_DEBUG, LOG_INFO, LOG_ERROR };
 
 static void logProto(LogLevel level, const char* fmt, ...) {
+    if (level == LOG_DEBUG) return; 
+
     FILE* f = fopen("/mnt/ext1/system/calibre-connect.log", "a");
     if (f) {
         const char* prefix[] = {"[DEBUG]", "[INFO]", "[ERROR]"};
@@ -33,7 +35,7 @@ static void logProto(LogLevel level, const char* fmt, ...) {
         vfprintf(f, fmt, args);
         va_end(args);
         fprintf(f, "\n");
-        fflush(f);
+        // fflush(f); // Уберите fflush для ускорения, если не нужен реал-тайм лог при крешах
         fclose(f);
     }
 }
@@ -346,7 +348,7 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
             break;
         }
         
-        logProto(LOG_DEBUG, "Received opcode %d", (int)opcode);
+        // logProto(LOG_DEBUG, "Received opcode %d", (int)opcode);
         
         json_object* args = parseJSON(jsonData);
         if (!args) {
@@ -535,16 +537,26 @@ bool CalibreProtocol::handleGetBookCount(json_object* args) {
         useCache = json_object_get_boolean(cacheObj);
     }
     
-    if (cacheManager) {
+	if (cacheManager) {
         int matched = 0;
         for (auto& book : sessionBooks) {
-            std::string cachedUuid = cacheManager->getUuidForLpath(book.lpath);
-            if (!cachedUuid.empty()) {
-                book.uuid = cachedUuid;
-                matched++;
+            BookMetadata cachedMeta;
+            if (cacheManager->getCachedMetadata(book.lpath, cachedMeta)) {
+                bool usedCache = false;
+                
+                if (!cachedMeta.uuid.empty()) {
+                    book.uuid = cachedMeta.uuid;
+                    usedCache = true;
+                }
+                
+                if (!cachedMeta.lastModified.empty()) {
+                    book.lastModified = cachedMeta.lastModified;
+                }
+                
+                if (usedCache) matched++;
             }
         }
-        logProto(LOG_INFO, "UUID Patching: %d/%d books matched in cache", matched, count);
+        logProto(LOG_INFO, "UUID & Time Patching: %d/%d books matched in cache", matched, count);
     }
     
     logProto(LOG_INFO, "GetBookCount: %d books, useCache=%d", count, useCache);
@@ -1171,9 +1183,9 @@ bool CalibreProtocol::handleNoop(json_object* args) {
         return true; 
     }
     
-    if (json_object_object_get_ex(args, "priKey", &val)) {
+	if (json_object_object_get_ex(args, "priKey", &val)) {
         int index = json_object_get_int(val);
-        logProto(LOG_DEBUG, "Calibre requested details for book index: %d", index);
+        // logProto(LOG_DEBUG, "Calibre requested details for book index: %d", index);
         
         if (index >= 0 && index < (int)sessionBooks.size()) {
             json_object* bookJson = metadataToJson(sessionBooks[index]);
@@ -1182,7 +1194,7 @@ bool CalibreProtocol::handleNoop(json_object* args) {
                 json_object_object_add(bookJson, "_is_read_", json_object_new_boolean(true));
             }
             
-            sendOKResponse(bookJson);
+            sendOKResponse(bookJson); // <--- ПРОБЛЕМА ЗДЕСЬ
             freeJSON(bookJson);
         } else {
             logProto(LOG_ERROR, "Error: Requested priKey %d out of bounds", index);
@@ -1190,6 +1202,11 @@ bool CalibreProtocol::handleNoop(json_object* args) {
             sendOKResponse(resp);
             freeJSON(resp);
         }
+        return true;
+    }
+    
+    if (json_object_object_get_ex(args, "count", &val)) {
+        logProto(LOG_DEBUG, "Received batch count notification, ignoring response");
         return true;
     }
     
@@ -1278,6 +1295,3 @@ json_object* CalibreProtocol::cachedMetadataToJson(const BookMetadata& metadata,
     
     return obj;
 }
-
-
-
