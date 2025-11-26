@@ -914,7 +914,7 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     std::string filePath = bookManager->getBookFilePath(currentBookLpath);
     logProto(LOG_DEBUG, "Target path: %s", filePath.c_str());
 
-    BookPreparing(filePath.c_str());
+    // BookPreparing(filePath.c_str());
     
     size_t pos = filePath.rfind('/');
     if (pos != std::string::npos) {
@@ -1286,4 +1286,5 @@ json_object* CalibreProtocol::cachedMetadataToJson(const BookMetadata& metadata,
     
     return obj;
 }
+
 
