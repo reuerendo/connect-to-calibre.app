@@ -346,7 +346,7 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
             break;
         }
         
-        logProto(LOG_DEBUG, "Received opcode %d", (int)opcode);
+        // logProto(LOG_DEBUG, "Received opcode %d", (int)opcode);
         
         json_object* args = parseJSON(jsonData);
         if (!args) {
@@ -1173,7 +1173,7 @@ bool CalibreProtocol::handleNoop(json_object* args) {
     
     if (json_object_object_get_ex(args, "priKey", &val)) {
         int index = json_object_get_int(val);
-        logProto(LOG_DEBUG, "Calibre requested details for book index: %d", index);
+        // logProto(LOG_DEBUG, "Calibre requested details for book index: %d", index);
         
         if (index >= 0 && index < (int)sessionBooks.size()) {
             json_object* bookJson = metadataToJson(sessionBooks[index]);
