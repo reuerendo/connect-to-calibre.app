@@ -913,6 +913,8 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     
     std::string filePath = bookManager->getBookFilePath(currentBookLpath);
     logProto(LOG_DEBUG, "Target path: %s", filePath.c_str());
+
+    BookPreparing(filePath.c_str());
     
     size_t pos = filePath.rfind('/');
     if (pos != std::string::npos) {
@@ -982,6 +984,8 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     if (cacheManager) {
         cacheManager->updateCache(metadata);
     }
+
+    BookReady(filePath.c_str());
     
     booksReceivedInSession++;
     logProto(LOG_INFO, "Book added to DB and cache.");
@@ -999,6 +1003,8 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
     
     logProto(LOG_INFO, "Syncing metadata for: %s (Read: %d, Date: %s)", 
              metadata.title.c_str(), metadata.isRead, metadata.lastReadDate.c_str());
+
+    std::string filePath = bookManager->getBookFilePath(metadata.lpath);
     
     if (bookManager->updateBookSync(metadata)) {
         for(auto& b : sessionBooks) {
@@ -1015,6 +1021,9 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
         if (cacheManager) {
             cacheManager->updateCache(metadata);
         }
+
+        BookReady(filePath.c_str());
+        
     } else {
         logProto(LOG_ERROR, "Warning: Attempted to sync metadata for non-existent book");
     }
@@ -1277,3 +1286,4 @@ json_object* CalibreProtocol::cachedMetadataToJson(const BookMetadata& metadata,
     
     return obj;
 }
+
