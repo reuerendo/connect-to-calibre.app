@@ -295,8 +295,6 @@ void startCalibreConnection() {
     shouldStop = false;
     
     // --- 1. Prepare Managers (Main Thread) ---
-    // Resetting unique_ptrs automatically deletes old objects
-    // FIX: Using reset(new T()) instead of std::make_unique<T>() for C++11 compatibility
     
     if (!networkManager) {
         networkManager.reset(new NetworkManager());
@@ -305,6 +303,13 @@ void startCalibreConnection() {
     if (!bookManager) {
         bookManager.reset(new BookManager());
         bookManager->initialize("");
+        
+        // Log SD card status at connection start
+        if (bookManager->hasSDCard()) {
+            logMsg("Connection started - SD Card available: %s", bookManager->getSDCardPath().c_str());
+        } else {
+            logMsg("Connection started - No SD Card detected");
+        }
     }
     
     if (!cacheManager) {
@@ -312,7 +317,6 @@ void startCalibreConnection() {
     }
     
     // --- 2. Read Configuration (Main Thread) ---
-    // Critical: Reading iconfig in main thread to avoid data races
     ConnectionConfig config;
     config.ip = ReadString(appConfig, KEY_IP, DEFAULT_IP);
     config.port = ReadInt(appConfig, KEY_PORT, atoi(DEFAULT_PORT));
@@ -332,7 +336,6 @@ void startCalibreConnection() {
     const char* readDateCol = ReadString(appConfig, KEY_READ_DATE_COLUMN, DEFAULT_READ_DATE_COLUMN);
     const char* favCol = ReadString(appConfig, KEY_FAVORITE_COLUMN, DEFAULT_FAVORITE_COLUMN);
     
-    // FIX: Using reset(new T(...)) for C++11 compatibility
     protocol.reset(new CalibreProtocol(
         networkManager.get(), 
         bookManager.get(), 
@@ -343,12 +346,10 @@ void startCalibreConnection() {
     ));
     
     // --- 3. Start Thread ---
-    // Join previous thread if it was finished but not joined
     if (connectionThread.joinable()) {
         connectionThread.join();
     }
     
-    // Launch new thread passing config by value
     try {
         connectionThread = std::thread(connectionThreadFunc, config);
     } catch (const std::system_error& e) {
@@ -513,6 +514,18 @@ int mainEventHandler(int type, int par1, int par2) {
             initConfigItems();
             SetPanelType(PANEL_ENABLED);
             initConfig();
+            
+            // Check and log SD card status
+            if (bookManager) {
+                if (bookManager->hasSDCard()) {
+                    logMsg("SD Card detected: %s", bookManager->getSDCardPath().c_str());
+                    updateConnectionStatus("SD Card available");
+                } else {
+                    logMsg("No SD Card detected");
+                    updateConnectionStatus("No SD Card");
+                }
+            }
+            
             showMainScreen();
             SoftUpdate();
             SetWeakTimer("ConnectTimer", (iv_timerproc)connectionTimerFunc, 300);
@@ -543,45 +556,45 @@ int mainEventHandler(int type, int par1, int par2) {
                    retryConnectionHandler);
             break;
 
-			case EVT_BOOK_RECEIVED: {
-				int count = par1;
-				booksReceivedCount = count;
-				
-				const char* booksWord = (count == 1) ? 
-										i18n_get(STR_BOOK_SINGULAR) : 
-										i18n_get(STR_BOOKS_PLURAL);
-				
-				char statusBuffer[128];
-				snprintf(statusBuffer, sizeof(statusBuffer), "%s (%d %s)",
-						 i18n_get(STR_RECEIVING), count, booksWord);
-				updateConnectionStatus(statusBuffer);
-				SoftUpdate();
-				break;
-			}
+        case EVT_BOOK_RECEIVED: {
+            int count = par1;
+            booksReceivedCount = count;
+            
+            const char* booksWord = (count == 1) ? 
+                                    i18n_get(STR_BOOK_SINGULAR) : 
+                                    i18n_get(STR_BOOKS_PLURAL);
+            
+            char statusBuffer[128];
+            snprintf(statusBuffer, sizeof(statusBuffer), "%s (%d %s)",
+                     i18n_get(STR_RECEIVING), count, booksWord);
+            updateConnectionStatus(statusBuffer);
+            SoftUpdate();
+            break;
+        }
 
-			case EVT_BATCH_COMPLETE: {
-				int count = par1;
-				
-				if (count > 0) {
-					const char* booksWord = (count == 1) ? 
-											i18n_get(STR_BOOK_SINGULAR) : 
-											i18n_get(STR_BOOKS_PLURAL);
-					
-					char msgBuffer[256];
-					snprintf(msgBuffer, sizeof(msgBuffer),
-							 "%s.\n%s: %d %s.",
-							 i18n_get(STR_BATCH_SYNC_FINISHED),
-							 i18n_get(STR_TOTAL_RECEIVED),
-							 count,
-							 booksWord);
-					
-					Message(ICON_INFORMATION, i18n_get(STR_SYNC_COMPLETE), msgBuffer, 4000);
-				}
-				
-				updateConnectionStatus(i18n_get(STR_CONNECTED_IDLE));
-				SoftUpdate();
-				break;
-			}
+        case EVT_BATCH_COMPLETE: {
+            int count = par1;
+            
+            if (count > 0) {
+                const char* booksWord = (count == 1) ? 
+                                        i18n_get(STR_BOOK_SINGULAR) : 
+                                        i18n_get(STR_BOOKS_PLURAL);
+                
+                char msgBuffer[256];
+                snprintf(msgBuffer, sizeof(msgBuffer),
+                         "%s.\n%s: %d %s.",
+                         i18n_get(STR_BATCH_SYNC_FINISHED),
+                         i18n_get(STR_TOTAL_RECEIVED),
+                         count,
+                         booksWord);
+                
+                Message(ICON_INFORMATION, i18n_get(STR_SYNC_COMPLETE), msgBuffer, 4000);
+            }
+            
+            updateConnectionStatus(i18n_get(STR_CONNECTED_IDLE));
+            SoftUpdate();
+            break;
+        }
 
         case EVT_SHOW_TOAST:
             if (par1 == TOAST_CONNECTED) {
