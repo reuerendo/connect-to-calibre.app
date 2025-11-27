@@ -12,7 +12,7 @@ struct BookMetadata {
     std::string uuid;
     std::string title;
     std::string authors;
-    std::string authorSort; // Поле для сортировки (pb-db.lua)
+    std::string authorSort;
     std::string lpath;
     std::string series;
     int seriesIndex;
@@ -45,13 +45,10 @@ public:
     
     bool initialize(const std::string& ignored_path);
     
-    // Полное сохранение (при передаче файла)
     bool addBook(const BookMetadata& metadata);
     
-    // Обновление существующей книги
     bool updateBook(const BookMetadata& metadata); 
 
-    // "Тихая" синхронизация (только статусы)
     bool updateBookSync(const BookMetadata& metadata); 
     
     bool deleteBook(const std::string& lpath);
@@ -66,6 +63,11 @@ public:
     int getOrCreateBookshelf(sqlite3* db, const std::string& name);
     int findBookIdByPath(sqlite3* db, const std::string& lpath);
     void linkBookToShelf(sqlite3* db, int shelfId, int bookId);
+	
+	bool hasSDCard() const;
+	std::string getSDCardPath() const;
+	void setTargetStorage(const std::string& storage); // "main", "carda"
+	std::string getCurrentStorage() const;
 
 private:
     const std::string SYSTEM_DB_PATH = "/mnt/ext1/system/explorer-3/explorer-3.db";
@@ -77,6 +79,8 @@ private:
     
     int getOrCreateFolder(sqlite3* db, const std::string& folderPath, int storageId);
     bool processBookSettings(sqlite3* db, int book_id, const BookMetadata& metadata, int profile_id);
+	
+	std::string targetStorage; // "main" or "carda"
 };
 
 #endif // BOOK_MANAGER_H

@@ -91,6 +91,9 @@ private:
     // Metadata conversion
     BookMetadata jsonToMetadata(json_object* obj);
     json_object* metadataToJson(const BookMetadata& metadata);
+	
+	bool handleCardPrefix(json_object* args);
+	std::string currentOnCard; // "carda", "cardb" or empty for main
 };
 
 #endif // CALIBRE_PROTOCOL_H

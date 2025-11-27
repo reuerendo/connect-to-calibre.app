@@ -202,6 +202,11 @@ json_object* CalibreProtocol::createDeviceInfo() {
     json_object_object_add(info, "useUuidFileNames", json_object_new_boolean(false));
     json_object_object_add(info, "versionOK", json_object_new_boolean(true));
     
+    json_object_object_add(info, "has_card_a", 
+                          json_object_new_boolean(bookManager->hasSDCard()));
+    json_object_object_add(info, "has_card_b", 
+                          json_object_new_boolean(false));
+    
     if (!readColumn.empty()) {
         json_object_object_add(info, "isReadSyncCol", 
                               json_object_new_string(readColumn.c_str()));
@@ -309,6 +314,8 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
                           json_object_new_string(uuid));
     json_object_object_add(deviceData, "device_name", 
                           json_object_new_string(deviceName.c_str()));
+    json_object_object_add(deviceData, "location_code",  // НОВОЕ
+                          json_object_new_string("main"));
     
     json_object_object_add(deviceInfo, "device_info", deviceData);
     json_object_object_add(deviceInfo, "version", 
@@ -331,7 +338,7 @@ bool CalibreProtocol::performHandshake(const std::string& password) {
 }
 
 void CalibreProtocol::handleMessages(std::function<void(const std::string&)> statusCallback) {
-    int lastBooklistCount = 0; // Track books before booklist sync
+    int lastBooklistCount = 0;
     
     while (connected && network->isConnected()) {
         CalibreOpcode opcode;
@@ -348,8 +355,6 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
             break;
         }
         
-        // logProto(LOG_DEBUG, "Received opcode %d", (int)opcode);
-        
         json_object* args = parseJSON(jsonData);
         if (!args) {
             logProto(LOG_ERROR, "Failed to parse JSON for opcode %d", (int)opcode);
@@ -364,6 +369,11 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
             case SET_CALIBRE_DEVICE_INFO:
                 handlerSuccess = handleSetCalibreInfo(args);
                 statusCallback("Received device info");
+                break;
+                
+            case CARD_PREFIX:  // НОВЫЙ CASE
+                handlerSuccess = handleCardPrefix(args);
+                statusCallback("Sent card info");
                 break;
                 
             case FREE_SPACE:
@@ -384,14 +394,13 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
             case GET_BOOK_COUNT:
                 handlerSuccess = handleGetBookCount(args);
                 statusCallback("Sent book count");
-                lastBooklistCount = booksReceivedInSession; // Remember count before potential transfers
+                lastBooklistCount = booksReceivedInSession;
                 break;
                 
             case SEND_BOOKLISTS: {
                 handlerSuccess = handleSendBooklists(args);
                 statusCallback("Processing booklists");
                 
-                // Check if books were received since last GET_BOOK_COUNT
                 int newBooks = booksReceivedInSession - lastBooklistCount;
                 if (newBooks > 0) {
                     logProto(LOG_INFO, "Book transfer batch complete: %d new books", newBooks);
@@ -458,6 +467,25 @@ void CalibreProtocol::handleMessages(std::function<void(const std::string&)> sta
             return;
         }
     }
+}
+
+bool CalibreProtocol::handleCardPrefix(json_object* args) {
+    json_object* response = json_object_new_object();
+    
+    if (bookManager->hasSDCard()) {
+        json_object_object_add(response, "carda", 
+                              json_object_new_string(bookManager->getSDCardPath().c_str()));
+        logProto(LOG_INFO, "SD Card available: %s", bookManager->getSDCardPath().c_str());
+    } else {
+        json_object_object_add(response, "carda", NULL);
+        logProto(LOG_INFO, "No SD Card detected");
+    }
+    
+    json_object_object_add(response, "cardb", NULL);
+    
+    bool result = sendOKResponse(response);
+    freeJSON(response);
+    return result;
 }
 
 void CalibreProtocol::disconnect() {
@@ -528,7 +556,33 @@ bool CalibreProtocol::handleSetLibraryInfo(json_object* args) {
 }
 
 bool CalibreProtocol::handleGetBookCount(json_object* args) {
-    sessionBooks = bookManager->getAllBooks();
+    json_object* onCardObj = NULL;
+    std::string requestedCard = "";
+    if (json_object_object_get_ex(args, "on_card", &onCardObj)) {
+        const char* card = json_object_get_string(onCardObj);
+        if (card) requestedCard = card;
+    }
+    
+    std::vector<BookMetadata> allBooks = bookManager->getAllBooks();
+    
+    sessionBooks.clear();
+    for (const auto& book : allBooks) {
+        std::string bookLocation = "main";
+        std::string fullPath = bookManager->getBookFilePath(book.lpath);
+        
+        if (fullPath.find(SDCARDDIR) == 0) {
+            bookLocation = "carda";
+        }
+        
+        if (requestedCard.empty()) {
+            if (bookLocation == "main") {
+                sessionBooks.push_back(book);
+            }
+        } else if (requestedCard == bookLocation) {
+            sessionBooks.push_back(book);
+        }
+    }
+    
     int count = sessionBooks.size();
     
     bool useCache = false;
@@ -537,7 +591,7 @@ bool CalibreProtocol::handleGetBookCount(json_object* args) {
         useCache = json_object_get_boolean(cacheObj);
     }
     
-	if (cacheManager) {
+    if (cacheManager) {
         int matched = 0;
         for (auto& book : sessionBooks) {
             BookMetadata cachedMeta;
@@ -559,7 +613,8 @@ bool CalibreProtocol::handleGetBookCount(json_object* args) {
         logProto(LOG_INFO, "UUID & Time Patching: %d/%d books matched in cache", matched, count);
     }
     
-    logProto(LOG_INFO, "GetBookCount: %d books, useCache=%d", count, useCache);
+    logProto(LOG_INFO, "GetBookCount for %s: %d books, useCache=%d", 
+             requestedCard.empty() ? "main" : requestedCard.c_str(), count, useCache);
 
     json_object* response = json_object_new_object();
     json_object_object_add(response, "count", json_object_new_int(count));
@@ -953,6 +1008,7 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     json_object* metadataObj = NULL;
     json_object* lpathObj = NULL;
     json_object* lengthObj = NULL;
+    json_object* onCardObj = NULL;
     
     if (!json_object_object_get_ex(args, "lpath", &lpathObj) ||
         !json_object_object_get_ex(args, "length", &lengthObj) ||
@@ -960,12 +1016,32 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
         return sendErrorResponse("Missing required fields");
     }
     
+    currentOnCard = "";
+    if (json_object_object_get_ex(args, "on_card", &onCardObj)) {
+        const char* card = json_object_get_string(onCardObj);
+        if (card) {
+            currentOnCard = card;
+            logProto(LOG_INFO, "Book target storage: %s", currentOnCard.c_str());
+        }
+    }
+    
+    if (currentOnCard == "carda") {
+        if (!bookManager->hasSDCard()) {
+            logProto(LOG_ERROR, "SD Card requested but not available");
+            return sendErrorResponse("SD Card not available");
+        }
+        bookManager->setTargetStorage("carda");
+    } else {
+        bookManager->setTargetStorage("main");
+    }
+    
     currentBookLpath = json_object_get_string(lpathObj);
     currentBookLength = json_object_get_int64(lengthObj);
     currentBookReceived = 0;
     
-    logProto(LOG_INFO, "Receiving book: %s (%lld bytes)", 
-            currentBookLpath.c_str(), currentBookLength);
+    logProto(LOG_INFO, "Receiving book: %s (%lld bytes) to %s", 
+            currentBookLpath.c_str(), currentBookLength,
+            bookManager->getCurrentStorage().c_str());
     
     BookMetadata metadata = jsonToMetadata(metadataObj);
     metadata.lpath = currentBookLpath;
@@ -1043,7 +1119,6 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
         cacheManager->updateCache(metadata);
     }
     
-    // Generate cover cache in background
     generateCoverCache(filePath);
     
     booksReceivedInSession++;

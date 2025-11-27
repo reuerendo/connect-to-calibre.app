@@ -68,7 +68,33 @@ static time_t roundToDay(time_t timestamp) {
 // --- Implementation ---
 
 BookManager::BookManager() {
-    booksDir = "/mnt/ext1"; 
+    booksDir = FLASHDIR;
+    targetStorage = "main";
+}
+
+bool BookManager::hasSDCard() const {
+    struct stat st;
+    return (stat(SDCARDDIR, &st) == 0 && S_ISDIR(st.st_mode));
+}
+
+std::string BookManager::getSDCardPath() const {
+    return SDCARDDIR;
+}
+
+void BookManager::setTargetStorage(const std::string& storage) {
+    if (storage == "carda" && hasSDCard()) {
+        booksDir = SDCARDDIR;
+        targetStorage = "carda";
+        LOG_MSG("Storage switched to SD Card: %s", SDCARDDIR);
+    } else {
+        booksDir = FLASHDIR;
+        targetStorage = "main";
+        LOG_MSG("Storage switched to internal: %s", FLASHDIR);
+    }
+}
+
+std::string BookManager::getCurrentStorage() const {
+    return targetStorage;
 }
 
 BookManager::~BookManager() {
@@ -102,9 +128,13 @@ void BookManager::closeDB(sqlite3* db) {
 }
 
 int BookManager::getStorageId(const std::string& filename) {
-    // Простая проверка без создания лишних string объектов
-    if (filename.compare(0, 10, "/mnt/ext1/") == 0 || filename == "/mnt/ext1") return 1;
-    return 2;
+    if (filename.compare(0, strlen(FLASHDIR), FLASHDIR) == 0) {
+        return 1; // Internal storage
+    }
+    if (filename.compare(0, strlen(SDCARDDIR), SDCARDDIR) == 0) {
+        return 2; // SD Card
+    }
+    return (targetStorage == "carda") ? 2 : 1;
 }
 
 std::string BookManager::getFirstLetter(const std::string& str) {
@@ -199,12 +229,10 @@ int BookManager::getOrCreateFolder(sqlite3* db, const std::string& folderPath, i
 std::string BookManager::getBookFilePath(const std::string& lpath) {
     if (lpath.empty()) return "";
     if (lpath[0] == '/') {
-        return (booksDir.back() == '/') ? booksDir + lpath.substr(1) : booksDir + lpath;
+        return lpath;
     }
     return (booksDir.back() == '/') ? booksDir + lpath : booksDir + "/" + lpath;
 }
-
-// В book_manager.cpp
 
 bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadata& metadata, int profileId) {
     int completed = metadata.isRead ? 1 : 0;

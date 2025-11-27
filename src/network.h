@@ -30,7 +30,8 @@ enum CalibreOpcode {
     DISPLAY_MESSAGE           = 17,
     CALIBRE_BUSY              = 18,
     SET_LIBRARY_INFO          = 19,
-    ERROR_OPCODE              = 20
+    ERROR_OPCODE              = 20,
+	CARD_PREFIX = 32
 };
 
 // Broadcast ports for Calibre discovery
