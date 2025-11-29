@@ -955,22 +955,27 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
 }
 
 void CalibreProtocol::generateCoverCache(const std::string& filePath) {
-    // Generate cover cache in background to avoid blocking
-    CoverCacheTask* task = new CoverCacheTask{filePath, this};
+    logProto(LOG_INFO, "Generating cover for: %s", filePath.c_str());
+
+    ibitmap* cover = GetBookCover(filePath.c_str(), 
+                                  COVER_HEIGHT * 2/3, 
+                                  COVER_HEIGHT);
     
-    pthread_t thread;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    
-    if (pthread_create(&thread, &attr, 
-                       reinterpret_cast<void*(*)(void*)>(coverCacheWorker), 
-                       task) != 0) {
-        logProto(LOG_ERROR, "Failed to create cover cache thread");
-        delete task;
+    if (cover) {
+        int result = CoverCachePut(CCS_FBREADER, filePath.c_str(), cover);
+        
+        if (result == 1) { // CoverCachePut возвращает 1 при успехе (обычно MSG_OK)
+            logProto(LOG_DEBUG, "Cover cache created successfully");
+        } else {
+            logProto(LOG_ERROR, "Failed to put cover into cache, code: %d", result);
+        }
+        
+        free(cover);
+    } else {
+        logProto(LOG_ERROR, "GetBookCover returned NULL. Parser failed or file locked.");
     }
-    
-    pthread_attr_destroy(&attr);
+
+    BookReady(filePath.c_str());
 }
 
 void CalibreProtocol::coverCacheWorker(void* context) {
