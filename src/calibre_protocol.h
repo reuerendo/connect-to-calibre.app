@@ -81,12 +81,6 @@ private:
     std::string parseJsonStringOrArray(json_object* val);
 	
     void generateCoverCache(const std::string& filePath);
-    static void coverCacheWorker(void* context);
-    
-    struct CoverCacheTask {
-        std::string filePath;
-        CalibreProtocol* protocol;
-    };
     
     // Metadata conversion
     BookMetadata jsonToMetadata(json_object* obj);

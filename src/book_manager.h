@@ -72,6 +72,8 @@ public:
 private:
     const std::string SYSTEM_DB_PATH = "/mnt/ext1/system/explorer-3/explorer-3.db";
     std::string booksDir;
+	
+	time_t currentBatchTimestamp;
     
     int getStorageId(const std::string& filename);
     int getCurrentProfileId(sqlite3* db);

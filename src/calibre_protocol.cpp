@@ -955,51 +955,27 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
 }
 
 void CalibreProtocol::generateCoverCache(const std::string& filePath) {
-    // Generate cover cache in background to avoid blocking
-    CoverCacheTask* task = new CoverCacheTask{filePath, this};
-    
-    pthread_t thread;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    
-    if (pthread_create(&thread, &attr, 
-                       reinterpret_cast<void*(*)(void*)>(coverCacheWorker), 
-                       task) != 0) {
-        logProto(LOG_ERROR, "Failed to create cover cache thread");
-        delete task;
-    }
-    
-    pthread_attr_destroy(&attr);
-}
+    logProto(LOG_INFO, "Generating cover for: %s", filePath.c_str());
 
-void CalibreProtocol::coverCacheWorker(void* context) {
-    CoverCacheTask* task = static_cast<CoverCacheTask*>(context);
-    
-    // Generate cover with standard dimensions
-    ibitmap* cover = GetBookCover(task->filePath.c_str(), 
-                                  COVER_HEIGHT * 2/3,  // width (aspect ratio 2:3)
+    ibitmap* cover = GetBookCover(filePath.c_str(), 
+                                  COVER_HEIGHT * 2/3, 
                                   COVER_HEIGHT);
     
     if (cover) {
-        // Store in Adobe reader cache (most universal)
-        int result = CoverCachePut(CCS_ADOBE, task->filePath.c_str(), cover);
+        int result = CoverCachePut(CCS_FBREADER, filePath.c_str(), cover);
         
-        if (result == 0) {
-            logProto(LOG_DEBUG, "Cover cache created for: %s", 
-                    task->filePath.c_str());
+        if (result == 1) {
+            logProto(LOG_DEBUG, "Cover cache created successfully");
         } else {
-            logProto(LOG_ERROR, "Failed to cache cover for: %s", 
-                    task->filePath.c_str());
+            logProto(LOG_ERROR, "Failed to put cover into cache, code: %d", result);
         }
         
         free(cover);
     } else {
-        logProto(LOG_DEBUG, "No cover found for: %s", task->filePath.c_str());
+        logProto(LOG_ERROR, "GetBookCover returned NULL. Parser failed or file locked.");
     }
-    
-    delete task;
-    return;
+
+    BookReady(filePath.c_str());
 }
 
 bool CalibreProtocol::handleSendBook(json_object* args) {
