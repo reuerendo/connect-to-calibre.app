@@ -131,7 +131,7 @@ CalibreProtocol::CalibreProtocol(NetworkManager* net, BookManager* bookMgr,
         deviceName = "PocketBook Device";
     }
     
-    appVersion = "1.0.1";
+    appVersion = "1.0.2";
     
     logProto(LOG_INFO, "Device name: %s", deviceName.c_str());
 }
@@ -582,6 +582,9 @@ bool CalibreProtocol::handleGetBookCount(json_object* args) {
             sessionBooks.push_back(book);
         }
     }
+    
+    // Reset books counter at the start of a new book transfer batch
+    booksReceivedInSession = 0;
     
     int count = sessionBooks.size();
     
