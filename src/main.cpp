@@ -272,7 +272,7 @@ void connectionThreadFunc(ConnectionConfig config) {
 				int count = protocol->getBooksReceivedCount();
 				SendEvent(mainEventHandler, EVT_BOOK_RECEIVED, count, 0);
 			} else if (status == "BATCH_COMPLETE") {
-				int count = protocol->getBooksReceivedCount();
+				int count = protocol->getLastBatchCount();
 				SendEvent(mainEventHandler, EVT_BATCH_COMPLETE, count, 0);
 			}
 		});

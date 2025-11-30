@@ -27,6 +27,9 @@ public:
     const std::string& getErrorMessage() const { return errorMessage; }
     int getBooksReceivedCount() const { return booksReceivedInSession; }
     
+    // ДОБАВЛЕНО: Геттер для количества книг в последней партии
+    int getLastBatchCount() const { return lastBatchCount; }
+    
 private:
     NetworkManager* network;
     BookManager* bookManager;
@@ -49,6 +52,9 @@ private:
     long long currentBookReceived;
     FILE* currentBookFile;
     int booksReceivedInSession;
+    
+    // ДОБАВЛЕНО: Счетчик для текущей пачки передачи
+    int lastBatchCount;
     
     // Protocol handlers
     bool handleGetInitializationInfo(json_object* args);
