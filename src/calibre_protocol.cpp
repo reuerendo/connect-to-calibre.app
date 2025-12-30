@@ -971,7 +971,7 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
     return obj;
 }
 
-void CalibreProtocol::generateCoverCache(const std::string& filePath) {
+/* void CalibreProtocol::generateCoverCache(const std::string& filePath) {
     logProto(LOG_INFO, "generateCoverCache() called for: %s", filePath.c_str());
 
     if (filePath.empty()) {
@@ -1011,7 +1011,7 @@ void CalibreProtocol::generateCoverCache(const std::string& filePath) {
     // BookReady triggers the system indexer to notice the new/updated file
     logProto(LOG_DEBUG, "Calling BookReady() for %s", filePath.c_str());
     BookReady(filePath.c_str());
-}
+} */
 
 bool CalibreProtocol::handleSendBook(json_object* args) {
     logProto(LOG_INFO, "Starting handleSendBook");
