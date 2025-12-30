@@ -360,6 +360,14 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
 bool BookManager::addBook(const BookMetadata& metadata) {
     std::string fullPath = getBookFilePath(metadata.lpath);
     
+    // Compute fast hash for the file
+    char hashBuffer[256];
+    if (FastBookHash(fullPath.c_str(), hashBuffer, sizeof(hashBuffer)) != 0) {
+        LOG_MSG("Error: Failed to compute fast hash for: %s", fullPath.c_str());
+        return false;
+    }
+    std::string fastHash(hashBuffer);
+    
     std::string folderName, fileName;
     size_t lastSlash = fullPath.find_last_of('/');
     if (lastSlash == std::string::npos) {
@@ -376,11 +384,10 @@ bool BookManager::addBook(const BookMetadata& metadata) {
 
     long long fileSize = metadata.size;
     time_t fileMtime = fastParseIsoTime(metadata.lastModified);
-    if (fileMtime == 0) fileMtime = time(NULL); // Fallback
+    if (fileMtime == 0) fileMtime = time(NULL);
 
-    // Get file access time (last opened)
     time_t fileAtime = getFileAccessTime(fullPath);
-    if (fileAtime == 0) fileAtime = fileMtime; // Fallback to modification time
+    if (fileAtime == 0) fileAtime = fileMtime;
 
     sqlite3* db = openDB();
     if (!db) return false;
@@ -422,11 +429,22 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     std::string firstTitleLetter = getFirstLetter(metadata.title);
 
     if (fileId != -1) {
-        static const char* updateFileSql = "UPDATE files SET size = ?, modification_time = ? WHERE id = ?";
+        // Update existing file with fast_hash
+        static const char* updateFileSql = "UPDATE files SET size = ?, modification_time = ?, fast_hash = ? WHERE id = ?";
         if (sqlite3_prepare_v2(db, updateFileSql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(stmt, 1, fileSize);
             sqlite3_bind_int64(stmt, 2, (long long)fileMtime);
-            sqlite3_bind_int(stmt, 3, fileId);
+            sqlite3_bind_text(stmt, 3, fastHash.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 4, fileId);
+            sqlite3_step(stmt);
+            sqlite3_finalize(stmt);
+        }
+
+        // Update books_fast_hashes
+        static const char* updateHashSql = "INSERT OR REPLACE INTO books_fast_hashes (fast_hash, book_id) VALUES (?, ?)";
+        if (sqlite3_prepare_v2(db, updateHashSql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, fastHash.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 2, bookId);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
@@ -456,6 +474,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
             sqlite3_finalize(stmt);
         }
     } else {
+        // Insert new book
         static const char* insertBookSql = 
             "INSERT INTO books_impl (title, first_title_letter, author, firstauthor, "
             "first_author_letter, series, numinseries, size, isbn, sort_title, creationtime, "
@@ -484,9 +503,10 @@ bool BookManager::addBook(const BookMetadata& metadata) {
         }
 
         if (bookId != -1) {
+            // Insert file with fast_hash
             static const char* insertFileSql = 
-                "INSERT INTO files (storageid, folder_id, book_id, filename, size, modification_time, ext) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)";
+                "INSERT INTO files (storageid, folder_id, book_id, filename, size, modification_time, fast_hash, ext) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
                 
             if (sqlite3_prepare_v2(db, insertFileSql, -1, &stmt, nullptr) == SQLITE_OK) {
                 sqlite3_bind_int(stmt, 1, storageId);
@@ -495,7 +515,17 @@ bool BookManager::addBook(const BookMetadata& metadata) {
                 sqlite3_bind_text(stmt, 4, fileName.c_str(), -1, SQLITE_STATIC);
                 sqlite3_bind_int64(stmt, 5, fileSize);
                 sqlite3_bind_int64(stmt, 6, (long long)fileMtime);
-                sqlite3_bind_text(stmt, 7, fileExt.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 7, fastHash.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 8, fileExt.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_step(stmt);
+                sqlite3_finalize(stmt);
+            }
+
+            // Insert into books_fast_hashes
+            static const char* insertHashSql = "INSERT OR REPLACE INTO books_fast_hashes (fast_hash, book_id) VALUES (?, ?)";
+            if (sqlite3_prepare_v2(db, insertHashSql, -1, &stmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_text(stmt, 1, fastHash.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int(stmt, 2, bookId);
                 sqlite3_step(stmt);
                 sqlite3_finalize(stmt);
             }
@@ -566,13 +596,14 @@ bool BookManager::deleteBook(const std::string& lpath) {
     sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
 
     static const char* findSql = 
-        "SELECT f.id, f.book_id FROM files f "
+        "SELECT f.id, f.book_id, f.fast_hash FROM files f "
         "JOIN folders fo ON f.folder_id = fo.id "
         "WHERE f.filename = ? AND fo.name = ? AND f.storageid = ?";
         
     sqlite3_stmt* stmt;
     int fileId = -1;
     int bookId = -1;
+    std::string fastHash;
 
     if (sqlite3_prepare_v2(db, findSql, -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, fileName.c_str(), -1, SQLITE_STATIC);
@@ -582,30 +613,42 @@ bool BookManager::deleteBook(const std::string& lpath) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             fileId = sqlite3_column_int(stmt, 0);
             bookId = sqlite3_column_int(stmt, 1);
+            const char* hash = (const char*)sqlite3_column_text(stmt, 2);
+            if (hash) fastHash = hash;
         }
         sqlite3_finalize(stmt);
     }
 
     if (fileId != -1) {
-        // Кэширование statement здесь менее критично (удаление редкое), 
-        // но static const char* полезен
         static const char* sql1 = "DELETE FROM files WHERE id = ?";
         if (sqlite3_prepare_v2(db, sql1, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int(stmt, 1, fileId);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
+        
         static const char* sql2 = "DELETE FROM books_settings WHERE bookid = ?";
         if (sqlite3_prepare_v2(db, sql2, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int(stmt, 1, bookId);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
+        
         static const char* sql3 = "DELETE FROM books_impl WHERE id = ?";
         if (sqlite3_prepare_v2(db, sql3, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int(stmt, 1, bookId);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
+        }
+        
+        // Delete from books_fast_hashes
+        if (!fastHash.empty()) {
+            static const char* sql4 = "DELETE FROM books_fast_hashes WHERE fast_hash = ?";
+            if (sqlite3_prepare_v2(db, sql4, -1, &stmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_text(stmt, 1, fastHash.c_str(), -1, SQLITE_STATIC);
+                sqlite3_step(stmt);
+                sqlite3_finalize(stmt);
+            }
         }
     }
 
