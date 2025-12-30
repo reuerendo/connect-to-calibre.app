@@ -972,28 +972,79 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
 }
 
 void CalibreProtocol::generateCoverCache(const std::string& filePath) {
-    logProto(LOG_INFO, "Generating cover for: %s", filePath.c_str());
+    logProto(LOG_INFO,
+             "generateCoverCache() called. filePath='%s'",
+             filePath.c_str());
 
-    ibitmap* cover = GetBookCover(filePath.c_str(), 
-                                  COVER_HEIGHT * 2/3, 
-                                  COVER_HEIGHT);
-    
-    if (cover) {
-        int result = CoverCachePut(CCS_FBREADER, filePath.c_str(), cover);
-        
-        if (result == 1) {
-            logProto(LOG_DEBUG, "Cover cache created successfully");
-        } else {
-            logProto(LOG_ERROR, "Failed to put cover into cache, code: %d", result);
-        }
-        
-        free(cover);
-    } else {
-        logProto(LOG_ERROR, "GetBookCover returned NULL. Parser failed or file locked.");
+    if (filePath.empty()) {
+        logProto(LOG_ERROR,
+                 "generateCoverCache(): filePath is empty, aborting");
+        return;
     }
 
+    const int coverWidth  = COVER_HEIGHT * 2 / 3;
+    const int coverHeight = COVER_HEIGHT;
+
+    logProto(LOG_DEBUG,
+             "Requesting cover: width=%d height=%d",
+             coverWidth,
+             coverHeight);
+
+    ibitmap* cover = GetBookCover(filePath.c_str(),
+                                  coverWidth,
+                                  coverHeight);
+
+    logProto(LOG_DEBUG,
+             "GetBookCover() returned pointer=%p",
+             static_cast<void*>(cover));
+
+    if (!cover) {
+        logProto(LOG_ERROR,
+                 "GetBookCover() returned NULL. Possible reasons: "
+                 "unsupported format, parser error, file locked, or missing cover");
+        BookReady(filePath.c_str());
+        return;
+    }
+
+    logProto(LOG_DEBUG,
+             "Putting cover into cache. Provider=CCS_FBREADER");
+
+    int result = CoverCachePut(CCS_FBREADER,
+                               filePath.c_str(),
+                               cover);
+
+    logProto(LOG_DEBUG,
+             "CoverCachePut() returned code=%d",
+             result);
+
+    if (result == 1) {
+        logProto(LOG_INFO,
+                 "Cover cache created successfully for '%s'",
+                 filePath.c_str());
+    } else {
+        logProto(LOG_ERROR,
+                 "CoverCachePut() failed for '%s', code=%d",
+                 filePath.c_str(),
+                 result);
+    }
+
+    logProto(LOG_DEBUG,
+             "Freeing cover bitmap pointer=%p",
+             static_cast<void*>(cover));
+
+    free(cover);
+
+    logProto(LOG_DEBUG,
+             "Calling BookReady('%s')",
+             filePath.c_str());
+
     BookReady(filePath.c_str());
+
+    logProto(LOG_INFO,
+             "generateCoverCache() finished for '%s'",
+             filePath.c_str());
 }
+
 
 bool CalibreProtocol::handleSendBook(json_object* args) {
     logProto(LOG_INFO, "Starting handleSendBook");
