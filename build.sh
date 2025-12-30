@@ -10,14 +10,37 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+SDK_VERSION="6.8"
+SDK_DIR="SDK/SDK_6.3.0"
+SDK_ARCHIVE="SDK-B288-6.8.7z"
+SDK_URL="https://github.com/pocketbook/SDK_6.3.0/releases/download/6.8/${SDK_ARCHIVE}"
+
 # Check if SDK exists
-if [ ! -d "SDK/SDK_6.3.0" ]; then
-    echo -e "${YELLOW}PocketBook SDK not found. Downloading...${NC}"
+if [ ! -d "${SDK_DIR}/SDK-B288" ]; then
+    echo -e "${YELLOW}PocketBook SDK ${SDK_VERSION} not found. Downloading...${NC}"
     mkdir -p SDK
     cd SDK
-    git clone --depth 1 --branch 5.19 https://github.com/pocketbook/SDK_6.3.0.git
+    
+    # Download SDK archive
+    echo -e "${YELLOW}Downloading ${SDK_ARCHIVE}...${NC}"
+    curl -L -o "${SDK_ARCHIVE}" "${SDK_URL}"
+    
+    # Extract using bsdtar
+    echo -e "${YELLOW}Extracting SDK...${NC}"
+    if ! command -v bsdtar &> /dev/null; then
+        echo -e "${RED}Error: bsdtar not found. Please install libarchive-tools:${NC}"
+        echo "  sudo apt-get install libarchive-tools"
+        exit 1
+    fi
+    
+    mkdir -p SDK_6.3.0
+    bsdtar -xf "${SDK_ARCHIVE}" -C SDK_6.3.0
+    
+    # Clean up archive
+    rm "${SDK_ARCHIVE}"
+    
     cd ..
-    echo -e "${GREEN}SDK downloaded successfully.${NC}"
+    echo -e "${GREEN}SDK ${SDK_VERSION} downloaded and extracted successfully.${NC}"
 fi
 
 # Clean previous build
