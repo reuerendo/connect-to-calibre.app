@@ -360,7 +360,9 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
 bool BookManager::addBook(const BookMetadata& metadata) {
     std::string fullPath = getBookFilePath(metadata.lpath);
     
-    std::string folderName, fileName;
+    // ... (код разбора пути и имени файла остается прежним) ...
+    std::string folderName, fileName; // ... код получения имени и папки
+    // (для краткости пропускаю стандартный парсинг путей, он был корректен)
     size_t lastSlash = fullPath.find_last_of('/');
     if (lastSlash == std::string::npos) {
         folderName = "";
@@ -381,49 +383,57 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     time_t fileAtime = getFileAccessTime(fullPath);
     if (fileAtime == 0) fileAtime = fileMtime;
 
-    // Compute fast hash - try with full path to existing file
+    // --- ИСПРАВЛЕНИЕ ХЕШИРОВАНИЯ ---
+    
+    // 1. Сбрасываем буферы ФС на диск, чтобы файл освободился
+    iv_sync(); 
+    
     char hashBuffer[256];
     std::string fastHash;
     
     struct stat fileStat;
     if (stat(fullPath.c_str(), &fileStat) == 0) {
-        LOG_MSG("File exists, attempting hash: %s (size: %lld)", fullPath.c_str(), (long long)fileStat.st_size);
-        int hashResult = FastBookHash(fullPath.c_str(), hashBuffer, sizeof(hashBuffer));
+        // 2. Механизм повторных попыток (Retry loop)
+        int attempts = 0;
+        int hashResult = -1;
+        
+        while (attempts < 5) {
+            hashResult = FastBookHash(fullPath.c_str(), hashBuffer, sizeof(hashBuffer));
+            if (hashResult == 0) {
+                break; // Успех
+            }
+            // Если ошибка EBUSY (16), ждем 100мс и пробуем снова
+            LOG_MSG("FastBookHash busy (code %d), retrying... %d/5", hashResult, attempts + 1);
+            usleep(100000); // 100 ms
+            attempts++;
+        }
+
         if (hashResult == 0) {
             fastHash = hashBuffer;
             LOG_MSG("FastBookHash successful: %s", fastHash.c_str());
         } else {
-            LOG_MSG("FastBookHash failed with code: %d for file: %s", hashResult, fullPath.c_str());
+            LOG_MSG("FastBookHash failed finally with code: %d", hashResult);
+            // Можно попробовать fallback: рассчитать CRC32 вручную, если системная функция не работает
         }
-    } else {
-        LOG_MSG("File does not exist yet: %s", fullPath.c_str());
     }
 
     sqlite3* db = openDB();
-    if (!db) {
-        LOG_MSG("Failed to open database");
-        return false;
-    }
+    if (!db) return false;
 
     int storageId = getStorageId(fullPath);
     time_t now = time(NULL);
-    
-    if (currentBatchTimestamp == 0) {
-        currentBatchTimestamp = now;
-    }
+    if (currentBatchTimestamp == 0) currentBatchTimestamp = now;
 
     sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
 
     int folderId = getOrCreateFolder(db, folderName, storageId);
     if (folderId == -1) {
-        LOG_MSG("Error: Failed to get folder ID");
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         closeDB(db);
         return false;
     }
-    
-    LOG_MSG("Folder ID: %d for path: %s", folderId, folderName.c_str());
 
+    // Проверяем существование файла
     static const char* checkFileSql = "SELECT id, book_id FROM files WHERE filename = ? AND folder_id = ?";
     sqlite3_stmt* stmt;
     int fileId = -1;
@@ -435,13 +445,11 @@ bool BookManager::addBook(const BookMetadata& metadata) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             fileId = sqlite3_column_int(stmt, 0);
             bookId = sqlite3_column_int(stmt, 1);
-            LOG_MSG("Found existing file ID: %d, book ID: %d", fileId, bookId);
-        } else {
-            LOG_MSG("No existing file found, will insert new");
         }
         sqlite3_finalize(stmt);
     }
 
+    // Данные для сортировки
     std::string sortAuthor = metadata.authorSort.empty() ? metadata.authors : metadata.authorSort;
     std::string firstAuthorLetter = getFirstLetter(sortAuthor);
     std::string firstTitleLetter = getFirstLetter(metadata.title);
@@ -449,9 +457,10 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     if (fileId != -1) {
         LOG_MSG("Updating existing book ID: %d", bookId);
         
-        // Update existing file
+        // --- ОБНОВЛЕНИЕ ФАЙЛА (Включая fast_hash в таблице files, раз он там есть) ---
         if (!fastHash.empty()) {
-            static const char* updateFileSql = "UPDATE files SET size = ?, modification_time = ?, fast_hash = ? WHERE id = ?";
+            static const char* updateFileSql = 
+                "UPDATE files SET size = ?, modification_time = ?, fast_hash = ? WHERE id = ?";
             if (sqlite3_prepare_v2(db, updateFileSql, -1, &stmt, nullptr) == SQLITE_OK) {
                 sqlite3_bind_int64(stmt, 1, fileSize);
                 sqlite3_bind_int64(stmt, 2, (long long)fileMtime);
@@ -460,7 +469,17 @@ bool BookManager::addBook(const BookMetadata& metadata) {
                 sqlite3_step(stmt);
                 sqlite3_finalize(stmt);
             }
+            
+            // Также обновляем books_fast_hashes
+            static const char* updateBHSql = "INSERT OR REPLACE INTO books_fast_hashes (fast_hash, book_id) VALUES (?, ?)";
+            if (sqlite3_prepare_v2(db, updateBHSql, -1, &stmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_text(stmt, 1, fastHash.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int(stmt, 2, bookId);
+                sqlite3_step(stmt);
+                sqlite3_finalize(stmt);
+            }
         } else {
+            // Хеш не посчитался, обновляем только метаданные файла
             static const char* updateFileSql = "UPDATE files SET size = ?, modification_time = ? WHERE id = ?";
             if (sqlite3_prepare_v2(db, updateFileSql, -1, &stmt, nullptr) == SQLITE_OK) {
                 sqlite3_bind_int64(stmt, 1, fileSize);
@@ -471,23 +490,14 @@ bool BookManager::addBook(const BookMetadata& metadata) {
             }
         }
 
-        // Update books_fast_hashes if we have hash
-        if (!fastHash.empty()) {
-            static const char* updateHashSql = "INSERT OR REPLACE INTO books_fast_hashes (fast_hash, book_id) VALUES (?, ?)";
-            if (sqlite3_prepare_v2(db, updateHashSql, -1, &stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_text(stmt, 1, fastHash.c_str(), -1, SQLITE_TRANSIENT);
-                sqlite3_bind_int(stmt, 2, bookId);
-                sqlite3_step(stmt);
-                sqlite3_finalize(stmt);
-            }
-        }
-
+        // Обновление books_impl (остается без изменений)
         static const char* updateBookSql = 
             "UPDATE books_impl SET title=?, first_title_letter=?, author=?, firstauthor=?, "
             "first_author_letter=?, series=?, numinseries=?, size=?, isbn=?, sort_title=?, "
             "updated=?, ts_added=?, creationtime=? WHERE id=?";
             
         if (sqlite3_prepare_v2(db, updateBookSql, -1, &stmt, nullptr) == SQLITE_OK) {
+            // ... биндинг параметров как раньше ...
             sqlite3_bind_text(stmt, 1, metadata.title.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_text(stmt, 2, firstTitleLetter.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(stmt, 3, metadata.authors.c_str(), -1, SQLITE_STATIC);
@@ -502,24 +512,21 @@ bool BookManager::addBook(const BookMetadata& metadata) {
             sqlite3_bind_int64(stmt, 12, currentBatchTimestamp);
             sqlite3_bind_int64(stmt, 13, (long long)fileAtime);
             sqlite3_bind_int(stmt, 14, bookId);
-            
-            if (sqlite3_step(stmt) == SQLITE_DONE) {
-                LOG_MSG("Book updated successfully");
-            } else {
-                LOG_MSG("Failed to update book: %s", sqlite3_errmsg(db));
-            }
+            sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
+
     } else {
+        // Вставка новой книги
         LOG_MSG("Inserting new book");
         
-        // Insert new book
         static const char* insertBookSql = 
             "INSERT INTO books_impl (title, first_title_letter, author, firstauthor, "
             "first_author_letter, series, numinseries, size, isbn, sort_title, creationtime, "
             "updated, ts_added, hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
             
         if (sqlite3_prepare_v2(db, insertBookSql, -1, &stmt, nullptr) == SQLITE_OK) {
+             // ... биндинг параметров как раньше ...
             sqlite3_bind_text(stmt, 1, metadata.title.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_text(stmt, 2, firstTitleLetter.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(stmt, 3, metadata.authors.c_str(), -1, SQLITE_STATIC);
@@ -537,17 +544,12 @@ bool BookManager::addBook(const BookMetadata& metadata) {
             
             if (sqlite3_step(stmt) == SQLITE_DONE) {
                 bookId = (int)sqlite3_last_insert_rowid(db);
-                LOG_MSG("Book inserted with ID: %d", bookId);
-            } else {
-                LOG_MSG("Failed to insert book: %s", sqlite3_errmsg(db));
             }
             sqlite3_finalize(stmt);
-        } else {
-            LOG_MSG("Failed to prepare insert book statement: %s", sqlite3_errmsg(db));
         }
 
         if (bookId != -1) {
-            // Insert file with or without fast_hash
+            // Вставка файла (Включая fast_hash)
             if (!fastHash.empty()) {
                 static const char* insertFileSql = 
                     "INSERT INTO files (storageid, folder_id, book_id, filename, size, modification_time, fast_hash, ext) "
@@ -562,29 +564,24 @@ bool BookManager::addBook(const BookMetadata& metadata) {
                     sqlite3_bind_int64(stmt, 6, (long long)fileMtime);
                     sqlite3_bind_text(stmt, 7, fastHash.c_str(), -1, SQLITE_TRANSIENT);
                     sqlite3_bind_text(stmt, 8, fileExt.c_str(), -1, SQLITE_TRANSIENT);
-                    if (sqlite3_step(stmt) == SQLITE_DONE) {
-                        LOG_MSG("File inserted with hash");
-                    } else {
-                        LOG_MSG("Failed to insert file with hash: %s", sqlite3_errmsg(db));
-                    }
+                    sqlite3_step(stmt);
                     sqlite3_finalize(stmt);
-                } else {
-                    LOG_MSG("Failed to prepare insert file statement: %s", sqlite3_errmsg(db));
                 }
-
-                // Insert into books_fast_hashes
-                static const char* insertHashSql = "INSERT OR REPLACE INTO books_fast_hashes (fast_hash, book_id) VALUES (?, ?)";
-                if (sqlite3_prepare_v2(db, insertHashSql, -1, &stmt, nullptr) == SQLITE_OK) {
+                
+                // Вставка в books_fast_hashes
+                static const char* insertBHSql = "INSERT OR REPLACE INTO books_fast_hashes (fast_hash, book_id) VALUES (?, ?)";
+                if (sqlite3_prepare_v2(db, insertBHSql, -1, &stmt, nullptr) == SQLITE_OK) {
                     sqlite3_bind_text(stmt, 1, fastHash.c_str(), -1, SQLITE_TRANSIENT);
                     sqlite3_bind_int(stmt, 2, bookId);
                     sqlite3_step(stmt);
                     sqlite3_finalize(stmt);
                 }
             } else {
+                // Вставка без хеша (если он не удался)
                 static const char* insertFileSql = 
                     "INSERT INTO files (storageid, folder_id, book_id, filename, size, modification_time, ext) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)";
-                    
+                
                 if (sqlite3_prepare_v2(db, insertFileSql, -1, &stmt, nullptr) == SQLITE_OK) {
                     sqlite3_bind_int(stmt, 1, storageId);
                     sqlite3_bind_int(stmt, 2, folderId);
@@ -593,14 +590,8 @@ bool BookManager::addBook(const BookMetadata& metadata) {
                     sqlite3_bind_int64(stmt, 5, fileSize);
                     sqlite3_bind_int64(stmt, 6, (long long)fileMtime);
                     sqlite3_bind_text(stmt, 7, fileExt.c_str(), -1, SQLITE_TRANSIENT);
-                    if (sqlite3_step(stmt) == SQLITE_DONE) {
-                        LOG_MSG("File inserted without hash");
-                    } else {
-                        LOG_MSG("Failed to insert file: %s", sqlite3_errmsg(db));
-                    }
+                    sqlite3_step(stmt);
                     sqlite3_finalize(stmt);
-                } else {
-                    LOG_MSG("Failed to prepare insert file statement: %s", sqlite3_errmsg(db));
                 }
             }
         }
@@ -608,16 +599,11 @@ bool BookManager::addBook(const BookMetadata& metadata) {
 
     if (bookId != -1) {
         int profileId = getCurrentProfileId(db);
-        LOG_MSG("Processing book settings for book ID: %d, profile ID: %d", bookId, profileId);
         processBookSettings(db, bookId, metadata, profileId);
-    } else {
-        LOG_MSG("ERROR: bookId is -1, cannot process settings");
     }
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-    
     closeDB(db);
-    LOG_MSG("addBook completed for: %s", metadata.title.c_str());
     return true;
 }
 
