@@ -381,17 +381,29 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     time_t fileAtime = getFileAccessTime(fullPath);
     if (fileAtime == 0) fileAtime = fileMtime;
 
-    // Compute fast hash using filename only
+    // Compute fast hash - try with full path to existing file
     char hashBuffer[256];
     std::string fastHash;
-    if (FastBookHash(fileName.c_str(), hashBuffer, sizeof(hashBuffer)) == 0) {
-        fastHash = hashBuffer;
+    
+    struct stat fileStat;
+    if (stat(fullPath.c_str(), &fileStat) == 0) {
+        LOG_MSG("File exists, attempting hash: %s (size: %lld)", fullPath.c_str(), (long long)fileStat.st_size);
+        int hashResult = FastBookHash(fullPath.c_str(), hashBuffer, sizeof(hashBuffer));
+        if (hashResult == 0) {
+            fastHash = hashBuffer;
+            LOG_MSG("FastBookHash successful: %s", fastHash.c_str());
+        } else {
+            LOG_MSG("FastBookHash failed with code: %d for file: %s", hashResult, fullPath.c_str());
+        }
     } else {
-        LOG_MSG("Warning: Failed to compute fast hash for: %s", fileName.c_str());
+        LOG_MSG("File does not exist yet: %s", fullPath.c_str());
     }
 
     sqlite3* db = openDB();
-    if (!db) return false;
+    if (!db) {
+        LOG_MSG("Failed to open database");
+        return false;
+    }
 
     int storageId = getStorageId(fullPath);
     time_t now = time(NULL);
@@ -409,6 +421,8 @@ bool BookManager::addBook(const BookMetadata& metadata) {
         closeDB(db);
         return false;
     }
+    
+    LOG_MSG("Folder ID: %d for path: %s", folderId, folderName.c_str());
 
     static const char* checkFileSql = "SELECT id, book_id FROM files WHERE filename = ? AND folder_id = ?";
     sqlite3_stmt* stmt;
@@ -421,6 +435,9 @@ bool BookManager::addBook(const BookMetadata& metadata) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             fileId = sqlite3_column_int(stmt, 0);
             bookId = sqlite3_column_int(stmt, 1);
+            LOG_MSG("Found existing file ID: %d, book ID: %d", fileId, bookId);
+        } else {
+            LOG_MSG("No existing file found, will insert new");
         }
         sqlite3_finalize(stmt);
     }
@@ -430,6 +447,8 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     std::string firstTitleLetter = getFirstLetter(metadata.title);
 
     if (fileId != -1) {
+        LOG_MSG("Updating existing book ID: %d", bookId);
+        
         // Update existing file
         if (!fastHash.empty()) {
             static const char* updateFileSql = "UPDATE files SET size = ?, modification_time = ?, fast_hash = ? WHERE id = ?";
@@ -484,10 +503,16 @@ bool BookManager::addBook(const BookMetadata& metadata) {
             sqlite3_bind_int64(stmt, 13, (long long)fileAtime);
             sqlite3_bind_int(stmt, 14, bookId);
             
-            sqlite3_step(stmt);
+            if (sqlite3_step(stmt) == SQLITE_DONE) {
+                LOG_MSG("Book updated successfully");
+            } else {
+                LOG_MSG("Failed to update book: %s", sqlite3_errmsg(db));
+            }
             sqlite3_finalize(stmt);
         }
     } else {
+        LOG_MSG("Inserting new book");
+        
         // Insert new book
         static const char* insertBookSql = 
             "INSERT INTO books_impl (title, first_title_letter, author, firstauthor, "
@@ -512,8 +537,13 @@ bool BookManager::addBook(const BookMetadata& metadata) {
             
             if (sqlite3_step(stmt) == SQLITE_DONE) {
                 bookId = (int)sqlite3_last_insert_rowid(db);
+                LOG_MSG("Book inserted with ID: %d", bookId);
+            } else {
+                LOG_MSG("Failed to insert book: %s", sqlite3_errmsg(db));
             }
             sqlite3_finalize(stmt);
+        } else {
+            LOG_MSG("Failed to prepare insert book statement: %s", sqlite3_errmsg(db));
         }
 
         if (bookId != -1) {
@@ -532,8 +562,14 @@ bool BookManager::addBook(const BookMetadata& metadata) {
                     sqlite3_bind_int64(stmt, 6, (long long)fileMtime);
                     sqlite3_bind_text(stmt, 7, fastHash.c_str(), -1, SQLITE_TRANSIENT);
                     sqlite3_bind_text(stmt, 8, fileExt.c_str(), -1, SQLITE_TRANSIENT);
-                    sqlite3_step(stmt);
+                    if (sqlite3_step(stmt) == SQLITE_DONE) {
+                        LOG_MSG("File inserted with hash");
+                    } else {
+                        LOG_MSG("Failed to insert file with hash: %s", sqlite3_errmsg(db));
+                    }
                     sqlite3_finalize(stmt);
+                } else {
+                    LOG_MSG("Failed to prepare insert file statement: %s", sqlite3_errmsg(db));
                 }
 
                 // Insert into books_fast_hashes
@@ -557,8 +593,14 @@ bool BookManager::addBook(const BookMetadata& metadata) {
                     sqlite3_bind_int64(stmt, 5, fileSize);
                     sqlite3_bind_int64(stmt, 6, (long long)fileMtime);
                     sqlite3_bind_text(stmt, 7, fileExt.c_str(), -1, SQLITE_TRANSIENT);
-                    sqlite3_step(stmt);
+                    if (sqlite3_step(stmt) == SQLITE_DONE) {
+                        LOG_MSG("File inserted without hash");
+                    } else {
+                        LOG_MSG("Failed to insert file: %s", sqlite3_errmsg(db));
+                    }
                     sqlite3_finalize(stmt);
+                } else {
+                    LOG_MSG("Failed to prepare insert file statement: %s", sqlite3_errmsg(db));
                 }
             }
         }
@@ -566,12 +608,16 @@ bool BookManager::addBook(const BookMetadata& metadata) {
 
     if (bookId != -1) {
         int profileId = getCurrentProfileId(db);
+        LOG_MSG("Processing book settings for book ID: %d, profile ID: %d", bookId, profileId);
         processBookSettings(db, bookId, metadata, profileId);
+    } else {
+        LOG_MSG("ERROR: bookId is -1, cannot process settings");
     }
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
     
     closeDB(db);
+    LOG_MSG("addBook completed for: %s", metadata.title.c_str());
     return true;
 }
 
