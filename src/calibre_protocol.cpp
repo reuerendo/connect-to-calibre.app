@@ -972,79 +972,46 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
 }
 
 void CalibreProtocol::generateCoverCache(const std::string& filePath) {
-    logProto(LOG_INFO,
-             "generateCoverCache() called. filePath='%s'",
-             filePath.c_str());
+    logProto(LOG_INFO, "generateCoverCache() called for: %s", filePath.c_str());
 
     if (filePath.empty()) {
-        logProto(LOG_ERROR,
-                 "generateCoverCache(): filePath is empty, aborting");
+        logProto(LOG_ERROR, "generateCoverCache(): filePath is empty");
         return;
     }
 
-    const int coverWidth  = COVER_HEIGHT * 2 / 3;
+    // Recommended dimensions for PocketBook cover cache to avoid resizing
+    const int coverWidth = 200; 
     const int coverHeight = COVER_HEIGHT;
 
-    logProto(LOG_DEBUG,
-             "Requesting cover: width=%d height=%d",
-             coverWidth,
-             coverHeight);
-
-    ibitmap* cover = GetBookCover(filePath.c_str(),
-                                  coverWidth,
-                                  coverHeight);
-
-    logProto(LOG_DEBUG,
-             "GetBookCover() returned pointer=%p",
-             static_cast<void*>(cover));
+    // GetBookCover allocates an ibitmap structure and its pixel buffer
+    ibitmap* cover = GetBookCover(filePath.c_str(), coverWidth, coverHeight);
 
     if (!cover) {
-        logProto(LOG_ERROR,
-                 "GetBookCover() returned NULL. Possible reasons: "
-                 "unsupported format, parser error, file locked, or missing cover");
+        logProto(LOG_ERROR, "GetBookCover() returned NULL for %s", filePath.c_str());
+        // Notify system even if cover failed so it can try to parse it later
         BookReady(filePath.c_str());
         return;
     }
 
-    logProto(LOG_DEBUG,
-             "Putting cover into cache. Provider=CCS_FBREADER");
+    // In PocketBook SDK, CoverCachePut returns 0 on success.
+    // CCS_ADOBE is often more universal for the system Library app in SDK 6.x
+    int result = CoverCachePut(CCS_FBREADER, filePath.c_str(), cover);
 
-    int result = CoverCachePut(CCS_FBREADER,
-                               filePath.c_str(),
-                               cover);
-
-    logProto(LOG_DEBUG,
-             "CoverCachePut() returned code=%d",
-             result);
-
-    if (result == 1) {
-        logProto(LOG_INFO,
-                 "Cover cache created successfully for '%s'",
-                 filePath.c_str());
+    if (result == 0) {
+        logProto(LOG_INFO, "Cover cache created successfully (code %d)", result);
     } else {
-        logProto(LOG_ERROR,
-                 "CoverCachePut() failed for '%s', code=%d",
-                 filePath.c_str(),
-                 result);
+        // Error 11 often means the cache system is busy or directory is inaccessible
+        logProto(LOG_ERROR, "CoverCachePut() failed with code %d", result);
     }
 
-    logProto(LOG_DEBUG,
-             "Freeing cover bitmap pointer=%p",
-             static_cast<void*>(cover));
+    // IMPORTANT: Use iv_freebitmap instead of free() to avoid memory leaks
+    // of the underlying pixel data buffer.
+    iv_freebitmap(cover);
 
-    free(cover);
-
-    logProto(LOG_DEBUG,
-             "Calling BookReady('%s')",
-             filePath.c_str());
-
+    // BookReady triggers the system indexer to notice the new/updated file
+    logProto(LOG_DEBUG, "Calling BookReady() for %s", filePath.c_str());
     BookReady(filePath.c_str());
-
-    logProto(LOG_INFO,
-             "generateCoverCache() finished for '%s'",
-             filePath.c_str());
 }
-
 
 bool CalibreProtocol::handleSendBook(json_object* args) {
     logProto(LOG_INFO, "Starting handleSendBook");
