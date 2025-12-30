@@ -974,6 +974,15 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
 void CalibreProtocol::generateCoverCache(const std::string& filePath) {
     logProto(LOG_INFO, "Generating cover for: %s", filePath.c_str());
 
+    // CRITICAL: Must call BookPreparing BEFORE reading file
+    BookPreparing(filePath.c_str());
+    
+    // Ensure file is flushed to disk
+    iv_sync();
+    
+    // Small delay to ensure filesystem cache is flushed
+    usleep(100000); // 100ms
+    
     ibitmap* cover = GetBookCover(filePath.c_str(), 
                                   COVER_HEIGHT * 2/3, 
                                   COVER_HEIGHT);
@@ -987,11 +996,13 @@ void CalibreProtocol::generateCoverCache(const std::string& filePath) {
             logProto(LOG_ERROR, "Failed to put cover into cache, code: %d", result);
         }
         
+        // Correct way to free ibitmap - just use free()
         free(cover);
     } else {
-        logProto(LOG_ERROR, "GetBookCover returned NULL. Parser failed or file locked.");
+        logProto(LOG_ERROR, "GetBookCover returned NULL. File may be locked or corrupted.");
     }
 
+    // CRITICAL: Must call BookReady AFTER processing
     BookReady(filePath.c_str());
 }
 
