@@ -42,32 +42,28 @@ set(SOURCES
 # Create executable
 add_executable(${PROJECT_NAME} ${SOURCES})
 
-# Force static linking for all libraries
+# Force static linking for standard libraries
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++")
 
-# Try to find static libraries first
-set(CMAKE_FIND_LIBRARY_SUFFIXES .a .so)
-
-# Link libraries in correct order (dependencies matter for static linking)
-# Order: high-level libs first, then their dependencies
+# Link libraries
+# inkview must be dynamic (PocketBook system library)
+# Other libraries should be static where possible
 target_link_libraries(${PROJECT_NAME}
-    -Wl,--start-group
-    # Main libraries
-    -static inkview
-    -static freetype
-    -static json-c
-    -static sqlite3
-    -static ssl
-    -static crypto
-    -static z
-    -static pthread
-    # Additional dependencies that might be needed
-    -static png
-    -static bz2
-    -static dl
-    -static rt
-    -static m
-    -Wl,--end-group
+    inkview
+    -Wl,-Bstatic
+    freetype
+    json-c
+    ssl
+    crypto
+    sqlite3
+    z
+    png
+    bz2
+    -Wl,-Bdynamic
+    pthread
+    dl
+    rt
+    m
 )
 
 # Strip the binary to reduce size
