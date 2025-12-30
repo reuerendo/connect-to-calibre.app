@@ -232,7 +232,6 @@ std::string BookManager::getBookFilePath(const std::string& lpath) {
 }
 
 bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadata& metadata, int profileId) {
-    int completed = metadata.isRead ? 1 : 0;
     int favorite = metadata.isFavorite ? 1 : 0;
     
     time_t completedTs = 0;
@@ -240,43 +239,71 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
         completedTs = fastParseIsoTime(metadata.lastReadDate);
     }
 
-    // Check if record exists
-    const char* checkSql = "SELECT 1 FROM books_settings WHERE bookid = ? AND profileid = ?";
+    // Check if record exists and get current completed status
+    const char* checkSql = "SELECT completed FROM books_settings WHERE bookid = ? AND profileid = ?";
     bool exists = false;
+    int currentCompleted = 0;
     
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, checkSql, -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_int(stmt, 1, bookId);
         sqlite3_bind_int(stmt, 2, profileId);
-        if (sqlite3_step(stmt) == SQLITE_ROW) exists = true;
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            exists = true;
+            currentCompleted = sqlite3_column_int(stmt, 0);
+        }
         sqlite3_finalize(stmt);
     }
 
     if (exists) {
         if (metadata.isRead) {
-            // Book is READ: set progress to 100%
-            static const char* updateSqlRead = 
-                "UPDATE books_settings "
-                "SET completed = ?, favorite = ?, completed_ts = ?, cpage = 100, npage = 100 "
-                "WHERE bookid = ? AND profileid = ?";
+            // Book is READ
+            if (currentCompleted != 1) {
+                // Status changed from unread to read: update completed, trigger will set timestamp
+                static const char* updateCompletedSql = 
+                    "UPDATE books_settings "
+                    "SET completed = 1, favorite = ?, cpage = 100, npage = 100 "
+                    "WHERE bookid = ? AND profileid = ?";
+                    
+                if (sqlite3_prepare_v2(db, updateCompletedSql, -1, &stmt, nullptr) == SQLITE_OK) {
+                    sqlite3_bind_int(stmt, 1, favorite);
+                    sqlite3_bind_int(stmt, 2, bookId);
+                    sqlite3_bind_int(stmt, 3, profileId);
+                    sqlite3_step(stmt);
+                    sqlite3_finalize(stmt);
+                }
                 
-            if (sqlite3_prepare_v2(db, updateSqlRead, -1, &stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_int(stmt, 1, completed);
-                sqlite3_bind_int(stmt, 2, favorite);
-                sqlite3_bind_int64(stmt, 3, completedTs);
-                sqlite3_bind_int(stmt, 4, bookId);
-                sqlite3_bind_int(stmt, 5, profileId);
-                sqlite3_step(stmt);
-                sqlite3_finalize(stmt);
+                // Now override completed_ts with actual value from Calibre
+                if (completedTs > 0) {
+                    static const char* updateTsSql = 
+                        "UPDATE books_settings SET completed_ts = ? WHERE bookid = ? AND profileid = ?";
+                    if (sqlite3_prepare_v2(db, updateTsSql, -1, &stmt, nullptr) == SQLITE_OK) {
+                        sqlite3_bind_int64(stmt, 1, completedTs);
+                        sqlite3_bind_int(stmt, 2, bookId);
+                        sqlite3_bind_int(stmt, 3, profileId);
+                        sqlite3_step(stmt);
+                        sqlite3_finalize(stmt);
+                    }
+                }
+            } else {
+                // Already marked as read, just update timestamp and favorite
+                static const char* updateTsFavSql = 
+                    "UPDATE books_settings SET favorite = ?, completed_ts = ? WHERE bookid = ? AND profileid = ?";
+                if (sqlite3_prepare_v2(db, updateTsFavSql, -1, &stmt, nullptr) == SQLITE_OK) {
+                    sqlite3_bind_int(stmt, 1, favorite);
+                    sqlite3_bind_int64(stmt, 2, completedTs);
+                    sqlite3_bind_int(stmt, 3, bookId);
+                    sqlite3_bind_int(stmt, 4, profileId);
+                    sqlite3_step(stmt);
+                    sqlite3_finalize(stmt);
+                }
             }
         } else {
-            // Book is NOT read: preserve existing reading progress, don't force reset
-            static const char* updateSqlUnread = 
-                "UPDATE books_settings "
-                "SET completed = 0, favorite = ?, completed_ts = 0 "
-                "WHERE bookid = ? AND profileid = ?";
+            // Book is NOT read: only update favorite, don't touch completed field
+            static const char* updateFavSql = 
+                "UPDATE books_settings SET favorite = ? WHERE bookid = ? AND profileid = ?";
                 
-            if (sqlite3_prepare_v2(db, updateSqlUnread, -1, &stmt, nullptr) == SQLITE_OK) {
+            if (sqlite3_prepare_v2(db, updateFavSql, -1, &stmt, nullptr) == SQLITE_OK) {
                 sqlite3_bind_int(stmt, 1, favorite);
                 sqlite3_bind_int(stmt, 2, bookId);
                 sqlite3_bind_int(stmt, 3, profileId);
@@ -286,23 +313,45 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
         }
     } else {
         // New record
-        int initialCpage = metadata.isRead ? 100 : 0;
-        int initialNpage = metadata.isRead ? 100 : 0;
-
-        static const char* insertSql = 
-            "INSERT INTO books_settings (bookid, profileid, completed, favorite, completed_ts, cpage, npage) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)";
+        if (metadata.isRead) {
+            // Insert with completed=1, trigger will set timestamp
+            static const char* insertReadSql = 
+                "INSERT INTO books_settings (bookid, profileid, completed, favorite, cpage, npage) "
+                "VALUES (?, ?, 1, ?, 100, 100)";
+                
+            if (sqlite3_prepare_v2(db, insertReadSql, -1, &stmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_int(stmt, 1, bookId);
+                sqlite3_bind_int(stmt, 2, profileId);
+                sqlite3_bind_int(stmt, 3, favorite);
+                sqlite3_step(stmt);
+                sqlite3_finalize(stmt);
+            }
             
-        if (sqlite3_prepare_v2(db, insertSql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt, 1, bookId);
-            sqlite3_bind_int(stmt, 2, profileId);
-            sqlite3_bind_int(stmt, 3, completed);
-            sqlite3_bind_int(stmt, 4, favorite);
-            sqlite3_bind_int64(stmt, 5, completedTs);
-            sqlite3_bind_int(stmt, 6, initialCpage);
-            sqlite3_bind_int(stmt, 7, initialNpage);
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
+            // Override completed_ts with actual value from Calibre
+            if (completedTs > 0) {
+                static const char* updateTsSql = 
+                    "UPDATE books_settings SET completed_ts = ? WHERE bookid = ? AND profileid = ?";
+                if (sqlite3_prepare_v2(db, updateTsSql, -1, &stmt, nullptr) == SQLITE_OK) {
+                    sqlite3_bind_int64(stmt, 1, completedTs);
+                    sqlite3_bind_int(stmt, 2, bookId);
+                    sqlite3_bind_int(stmt, 3, profileId);
+                    sqlite3_step(stmt);
+                    sqlite3_finalize(stmt);
+                }
+            }
+        } else {
+            // Insert unread book without completed field - DB will use default
+            static const char* insertUnreadSql = 
+                "INSERT INTO books_settings (bookid, profileid, favorite, cpage, npage) "
+                "VALUES (?, ?, ?, 0, 0)";
+                
+            if (sqlite3_prepare_v2(db, insertUnreadSql, -1, &stmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_int(stmt, 1, bookId);
+                sqlite3_bind_int(stmt, 2, profileId);
+                sqlite3_bind_int(stmt, 3, favorite);
+                sqlite3_step(stmt);
+                sqlite3_finalize(stmt);
+            }
         }
     }
     return true;

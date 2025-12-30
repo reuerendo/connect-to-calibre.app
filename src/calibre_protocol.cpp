@@ -902,10 +902,10 @@ BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
     json_object* val = NULL;
     
     // Log full metadata for debugging
-    const char* fullJson = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PRETTY);
-    if (fullJson) {
-        logProto(LOG_INFO, "Received metadata from Calibre:\n%s", fullJson);
-    }
+    // const char* fullJson = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PRETTY);
+    // if (fullJson) {
+        // logProto(LOG_INFO, "Received metadata from Calibre:\n%s", fullJson);
+    // }
     
     if (json_object_object_get_ex(obj, "uuid", &val)) metadata.uuid = safeGetJsonString(val);
     if (json_object_object_get_ex(obj, "title", &val)) metadata.title = safeGetJsonString(val);
