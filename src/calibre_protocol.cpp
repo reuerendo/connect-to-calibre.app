@@ -1130,7 +1130,7 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
         cacheManager->updateCache(metadata);
     }
     
-    generateCoverCache(filePath);
+    // generateCoverCache(filePath);
     
     booksReceivedInSession++;
     logProto(LOG_INFO, "Book added to DB and cache.");
