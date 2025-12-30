@@ -42,16 +42,34 @@ set(SOURCES
 # Create executable
 add_executable(${PROJECT_NAME} ${SOURCES})
 
+# Force static linking for standard libraries
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++")
+
 # Link libraries
+# inkview must be dynamic (PocketBook system library)
+# Other libraries should be static where possible
 target_link_libraries(${PROJECT_NAME}
     inkview
+    -Wl,-Bstatic
     freetype
     json-c
-    crypto
     ssl
+    crypto
     sqlite3
     z
+    png
+    bz2
+    -Wl,-Bdynamic
     pthread
+    dl
+    rt
+    m
+)
+
+# Strip the binary to reduce size
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_STRIP} $<TARGET_FILE:${PROJECT_NAME}>
+    COMMENT "Stripping binary to reduce size"
 )
 
 # Set output name
