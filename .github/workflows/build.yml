@@ -20,13 +20,16 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake build-essential git libmpfr-dev libgmp-dev libmpc-dev
+        sudo apt-get install -y cmake build-essential git libmpfr-dev libgmp-dev libmpc-dev libarchive-tools curl
     
-    - name: Clone PocketBook SDK
+    - name: Download and extract PocketBook SDK 6.8
       run: |
         mkdir -p SDK
         cd SDK
-        git clone --depth 1 --branch 5.19 https://github.com/pocketbook/SDK_6.3.0.git
+        curl -L -o SDK-B288-6.8.7z https://github.com/pocketbook/SDK_6.3.0/releases/download/6.8/SDK-B288-6.8.7z
+        mkdir -p SDK_6.3.0
+        bsdtar -xf SDK-B288-6.8.7z -C SDK_6.3.0
+        rm SDK-B288-6.8.7z
     
     - name: Setup SDK environment
       run: |
