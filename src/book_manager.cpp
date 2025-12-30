@@ -57,6 +57,16 @@ static std::string formatIsoTime(time_t timestamp) {
     return std::string(buffer);
 }
 
+// Get file access time (last opened time)
+static time_t getFileAccessTime(const std::string& filePath) {
+    struct stat fileStat;
+    if (stat(filePath.c_str(), &fileStat) == 0) {
+        return fileStat.st_atime;
+    }
+    LOG_MSG("Warning: Could not get file stats for: %s", filePath.c_str());
+    return 0;
+}
+
 // --- Implementation ---
 
 BookManager::BookManager() : currentBatchTimestamp(0) {
@@ -319,6 +329,10 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     time_t fileMtime = fastParseIsoTime(metadata.lastModified);
     if (fileMtime == 0) fileMtime = time(NULL); // Fallback
 
+    // Get file access time (last opened)
+    time_t fileAtime = getFileAccessTime(fullPath);
+    if (fileAtime == 0) fileAtime = fileMtime; // Fallback to modification time
+
     sqlite3* db = openDB();
     if (!db) return false;
 
@@ -371,7 +385,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
         static const char* updateBookSql = 
             "UPDATE books_impl SET title=?, first_title_letter=?, author=?, firstauthor=?, "
             "first_author_letter=?, series=?, numinseries=?, size=?, isbn=?, sort_title=?, "
-            "updated=?, ts_added=? WHERE id=?";
+            "updated=?, ts_added=?, creationtime=? WHERE id=?";
             
         if (sqlite3_prepare_v2(db, updateBookSql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, metadata.title.c_str(), -1, SQLITE_STATIC);
@@ -386,7 +400,8 @@ bool BookManager::addBook(const BookMetadata& metadata) {
             sqlite3_bind_text(stmt, 10, metadata.title.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_int64(stmt, 11, now);
             sqlite3_bind_int64(stmt, 12, currentBatchTimestamp);
-            sqlite3_bind_int(stmt, 13, bookId);
+            sqlite3_bind_int64(stmt, 13, (long long)fileAtime);
+            sqlite3_bind_int(stmt, 14, bookId);
             
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
@@ -408,7 +423,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
             sqlite3_bind_int64(stmt, 8, metadata.size);
             sqlite3_bind_text(stmt, 9, metadata.isbn.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_text(stmt, 10, metadata.title.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_int(stmt, 11, 0);
+            sqlite3_bind_int64(stmt, 11, (long long)fileAtime);
             sqlite3_bind_int(stmt, 12, 0);
             sqlite3_bind_int64(stmt, 13, currentBatchTimestamp);
             sqlite3_bind_int(stmt, 14, 0);
