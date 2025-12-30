@@ -1131,7 +1131,7 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
             cacheManager->updateCache(metadata);
         }
 
-		// NotifyConfigChanged();
+		NotifyConfigChanged();
         
     } else {
         logProto(LOG_ERROR, "Warning: Attempted to sync metadata for non-existent book");
@@ -1401,5 +1401,6 @@ json_object* CalibreProtocol::cachedMetadataToJson(const BookMetadata& metadata,
     return obj;
 
 }
+
 
 
