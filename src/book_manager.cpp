@@ -311,15 +311,6 @@ bool BookManager::processBookSettings(sqlite3* db, int bookId, const BookMetadat
 bool BookManager::addBook(const BookMetadata& metadata) {
     std::string fullPath = getBookFilePath(metadata.lpath);
     
-    LOG_MSG("=== addBook START ===");
-    LOG_MSG("lpath: %s", metadata.lpath.c_str());
-    LOG_MSG("fullPath: %s", fullPath.c_str());
-    LOG_MSG("title: %s", metadata.title.c_str());
-    LOG_MSG("authors: %s", metadata.authors.c_str());
-    LOG_MSG("isbn: %s", metadata.isbn.c_str());
-    LOG_MSG("isbn.empty(): %d", metadata.isbn.empty());
-    LOG_MSG("isbn.length(): %zu", metadata.isbn.length());
-    
     std::string folderName, fileName;
     size_t lastSlash = fullPath.find_last_of('/');
     if (lastSlash == std::string::npos) {
@@ -343,10 +334,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     if (fileAtime == 0) fileAtime = fileMtime; // Fallback to modification time
 
     sqlite3* db = openDB();
-    if (!db) {
-        LOG_MSG("ERROR: Failed to open database");
-        return false;
-    }
+    if (!db) return false;
 
     int storageId = getStorageId(fullPath);
     time_t now = time(NULL);
@@ -376,9 +364,6 @@ bool BookManager::addBook(const BookMetadata& metadata) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             fileId = sqlite3_column_int(stmt, 0);
             bookId = sqlite3_column_int(stmt, 1);
-            LOG_MSG("Found existing file: fileId=%d, bookId=%d", fileId, bookId);
-        } else {
-            LOG_MSG("File not found in DB, will create new");
         }
         sqlite3_finalize(stmt);
     }
@@ -388,15 +373,12 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     std::string firstTitleLetter = getFirstLetter(metadata.title);
 
     if (fileId != -1) {
-        LOG_MSG("Updating existing book, bookId=%d", bookId);
-        
         static const char* updateFileSql = "UPDATE files SET size = ?, modification_time = ? WHERE id = ?";
         if (sqlite3_prepare_v2(db, updateFileSql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(stmt, 1, fileSize);
             sqlite3_bind_int64(stmt, 2, (long long)fileMtime);
             sqlite3_bind_int(stmt, 3, fileId);
-            int rc = sqlite3_step(stmt);
-            LOG_MSG("UPDATE files result: %d", rc);
+            sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
 
@@ -414,35 +396,17 @@ bool BookManager::addBook(const BookMetadata& metadata) {
             sqlite3_bind_text(stmt, 6, metadata.series.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_int(stmt, 7, metadata.seriesIndex);
             sqlite3_bind_int64(stmt, 8, metadata.size);
-            
-            // Critical: bind ISBN
-            LOG_MSG("Binding ISBN to UPDATE: '%s'", metadata.isbn.c_str());
-            if (metadata.isbn.empty()) {
-                sqlite3_bind_null(stmt, 9);
-                LOG_MSG("ISBN is empty, binding NULL");
-            } else {
-                sqlite3_bind_text(stmt, 9, metadata.isbn.c_str(), -1, SQLITE_STATIC);
-                LOG_MSG("ISBN bound as text");
-            }
-            
+            sqlite3_bind_text(stmt, 9, metadata.isbn.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_text(stmt, 10, metadata.title.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_int64(stmt, 11, now);
             sqlite3_bind_int64(stmt, 12, currentBatchTimestamp);
             sqlite3_bind_int64(stmt, 13, (long long)fileAtime);
             sqlite3_bind_int(stmt, 14, bookId);
             
-            int rc = sqlite3_step(stmt);
-            LOG_MSG("UPDATE books_impl result: %d (DONE=%d)", rc, SQLITE_DONE);
-            if (rc != SQLITE_DONE) {
-                LOG_MSG("UPDATE ERROR: %s", sqlite3_errmsg(db));
-            }
+            sqlite3_step(stmt);
             sqlite3_finalize(stmt);
-        } else {
-            LOG_MSG("ERROR: Failed to prepare UPDATE statement: %s", sqlite3_errmsg(db));
         }
     } else {
-        LOG_MSG("Creating new book");
-        
         static const char* insertBookSql = 
             "INSERT INTO books_impl (title, first_title_letter, author, firstauthor, "
             "first_author_letter, series, numinseries, size, isbn, sort_title, creationtime, "
@@ -457,34 +421,17 @@ bool BookManager::addBook(const BookMetadata& metadata) {
             sqlite3_bind_text(stmt, 6, metadata.series.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_int(stmt, 7, metadata.seriesIndex);
             sqlite3_bind_int64(stmt, 8, metadata.size);
-            
-            // Critical: bind ISBN
-            LOG_MSG("Binding ISBN to INSERT: '%s'", metadata.isbn.c_str());
-            if (metadata.isbn.empty()) {
-                sqlite3_bind_null(stmt, 9);
-                LOG_MSG("ISBN is empty, binding NULL");
-            } else {
-                sqlite3_bind_text(stmt, 9, metadata.isbn.c_str(), -1, SQLITE_STATIC);
-                LOG_MSG("ISBN bound as text");
-            }
-            
+            sqlite3_bind_text(stmt, 9, metadata.isbn.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_text(stmt, 10, metadata.title.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_int64(stmt, 11, (long long)fileAtime);
             sqlite3_bind_int(stmt, 12, 0);
             sqlite3_bind_int64(stmt, 13, currentBatchTimestamp);
             sqlite3_bind_int(stmt, 14, 0);
             
-            int rc = sqlite3_step(stmt);
-            LOG_MSG("INSERT books_impl result: %d (DONE=%d)", rc, SQLITE_DONE);
-            if (rc == SQLITE_DONE) {
+            if (sqlite3_step(stmt) == SQLITE_DONE) {
                 bookId = (int)sqlite3_last_insert_rowid(db);
-                LOG_MSG("Created new book with ID: %d", bookId);
-            } else {
-                LOG_MSG("INSERT ERROR: %s", sqlite3_errmsg(db));
             }
             sqlite3_finalize(stmt);
-        } else {
-            LOG_MSG("ERROR: Failed to prepare INSERT statement: %s", sqlite3_errmsg(db));
         }
 
         if (bookId != -1) {
@@ -500,8 +447,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
                 sqlite3_bind_int64(stmt, 5, fileSize);
                 sqlite3_bind_int64(stmt, 6, (long long)fileMtime);
                 sqlite3_bind_text(stmt, 7, fileExt.c_str(), -1, SQLITE_TRANSIENT);
-                int rc = sqlite3_step(stmt);
-                LOG_MSG("INSERT files result: %d", rc);
+                sqlite3_step(stmt);
                 sqlite3_finalize(stmt);
             }
         }
@@ -513,8 +459,6 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     }
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-    
-    LOG_MSG("=== addBook END (bookId=%d) ===", bookId);
     
     closeDB(db);
     return true;

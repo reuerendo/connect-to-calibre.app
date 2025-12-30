@@ -131,7 +131,7 @@ CalibreProtocol::CalibreProtocol(NetworkManager* net, BookManager* bookMgr,
         deviceName = "PocketBook Device";
     }
     
-    appVersion = "1.1.0";
+    appVersion = "1.0.1";
     
     logProto(LOG_INFO, "Device name: %s", deviceName.c_str());
 }
@@ -901,6 +901,12 @@ BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
     BookMetadata metadata;
     json_object* val = NULL;
     
+    // Log full metadata for debugging
+    const char* fullJson = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PRETTY);
+    if (fullJson) {
+        logProto(LOG_INFO, "Received metadata from Calibre:\n%s", fullJson);
+    }
+    
     if (json_object_object_get_ex(obj, "uuid", &val)) metadata.uuid = safeGetJsonString(val);
     if (json_object_object_get_ex(obj, "title", &val)) metadata.title = safeGetJsonString(val);
     if (json_object_object_get_ex(obj, "authors", &val)) metadata.authors = parseJsonStringOrArray(val);
@@ -910,6 +916,16 @@ BookMetadata CalibreProtocol::jsonToMetadata(json_object* obj) {
     if (json_object_object_get_ex(obj, "series_index", &val)) metadata.seriesIndex = json_object_get_int(val);
     if (json_object_object_get_ex(obj, "size", &val)) metadata.size = json_object_get_int64(val);
     if (json_object_object_get_ex(obj, "last_modified", &val)) metadata.lastModified = safeGetJsonString(val);
+
+    // Extract ISBN from identifiers
+    json_object* identifiers = NULL;
+    if (json_object_object_get_ex(obj, "identifiers", &identifiers)) {
+        json_object* isbnVal = NULL;
+        if (json_object_object_get_ex(identifiers, "isbn", &isbnVal)) {
+            metadata.isbn = safeGetJsonString(isbnVal);
+            logProto(LOG_DEBUG, "Extracted ISBN: %s", metadata.isbn.c_str());
+        }
+    }
 
     json_object* userMeta = NULL;
     if (json_object_object_get_ex(obj, "user_metadata", &userMeta)) {
@@ -1401,6 +1417,3 @@ json_object* CalibreProtocol::cachedMetadataToJson(const BookMetadata& metadata,
     return obj;
 
 }
-
-
-
