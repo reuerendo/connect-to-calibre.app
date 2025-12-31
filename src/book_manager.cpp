@@ -109,30 +109,24 @@ bool BookManager::initialize(const std::string& dbPath) {
 
 sqlite3* BookManager::openDB() {
     sqlite3* db;
+    // Используем SQLITE_OPEN_READWRITE без CREATE, системная БД должна существовать
     int rc = sqlite3_open_v2(SYSTEM_DB_PATH.c_str(), &db, SQLITE_OPEN_READWRITE, NULL);
     if (rc != SQLITE_OK) {
         LOG_MSG("Failed to open DB: %s", sqlite3_errmsg(db));
         if (db) sqlite3_close(db);
         return nullptr;
     }
+    sqlite3_busy_timeout(db, 5000);
     
-    sqlite3_exec(db, "PRAGMA journal_mode = WAL", NULL, NULL, NULL);
-    
-    sqlite3_busy_timeout(db, 10000);
-    
-    sqlite3_exec(db, "PRAGMA wal_autocheckpoint = 1000", NULL, NULL, NULL);
-    
+    // Ускорение работы с БД
     sqlite3_exec(db, "PRAGMA synchronous = NORMAL", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA journal_mode = WAL", NULL, NULL, NULL);
     
     return db;
 }
 
 void BookManager::closeDB(sqlite3* db) {
-    if (!db) return;
-    
-    sqlite3_exec(db, "PRAGMA wal_checkpoint(PASSIVE)", NULL, NULL, NULL);
-    
-    sqlite3_close(db);
+    if (db) sqlite3_close(db);
 }
 
 int BookManager::getStorageId(const std::string& filename) {
@@ -382,10 +376,11 @@ bool BookManager::addBook(const BookMetadata& metadata) {
 
     long long fileSize = metadata.size;
     time_t fileMtime = fastParseIsoTime(metadata.lastModified);
-    if (fileMtime == 0) fileMtime = time(NULL);
+    if (fileMtime == 0) fileMtime = time(NULL); // Fallback
 
+    // Get file access time (last opened)
     time_t fileAtime = getFileAccessTime(fullPath);
-    if (fileAtime == 0) fileAtime = fileMtime;
+    if (fileAtime == 0) fileAtime = fileMtime; // Fallback to modification time
 
     sqlite3* db = openDB();
     if (!db) return false;
@@ -397,13 +392,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
         currentBatchTimestamp = now;
     }
 
-    // Use IMMEDIATE transaction for WAL mode to reduce lock contention
-    int rc = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_MSG("Failed to begin transaction: %s", sqlite3_errmsg(db));
-        closeDB(db);
-        return false;
-    }
+    sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
 
     int folderId = getOrCreateFolder(db, folderName, storageId);
     if (folderId == -1) {
@@ -518,14 +507,8 @@ bool BookManager::addBook(const BookMetadata& metadata) {
         processBookSettings(db, bookId, metadata, profileId);
     }
 
-    // Commit transaction
-    rc = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_MSG("Failed to commit transaction: %s", sqlite3_errmsg(db));
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-        closeDB(db);
-        return false;
-    }
+    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+	sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
     
     closeDB(db);
     return true;
@@ -535,6 +518,7 @@ bool BookManager::updateBookSync(const BookMetadata& metadata) {
     sqlite3* db = openDB();
     if (!db) return false;
 
+    // Пытаемся найти ID без транзакции для скорости
     int bookId = findBookIdByPath(db, metadata.lpath);
     
     if (bookId == -1) {
@@ -543,23 +527,13 @@ bool BookManager::updateBookSync(const BookMetadata& metadata) {
         return false;
     }
 
-    // Use IMMEDIATE transaction for WAL mode
-    int rc = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_MSG("Failed to begin sync transaction: %s", sqlite3_errmsg(db));
-        closeDB(db);
-        return false;
-    }
+    sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
 
     int profileId = getCurrentProfileId(db);
     bool res = processBookSettings(db, bookId, metadata, profileId);
 
-    rc = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_MSG("Failed to commit sync transaction: %s", sqlite3_errmsg(db));
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-        res = false;
-    }
+    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+    // PRAGMA wal_checkpoint(FULL) тоже тяжелая операция, лучше доверить SQLite
     
     closeDB(db);
     return res;
@@ -590,13 +564,7 @@ bool BookManager::deleteBook(const std::string& lpath) {
     
     int storageId = getStorageId(filePath);
 
-    // Use IMMEDIATE transaction for WAL mode
-    int rc = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_MSG("Failed to begin delete transaction: %s", sqlite3_errmsg(db));
-        closeDB(db);
-        return false;
-    }
+    sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
 
     static const char* findSql = 
         "SELECT f.id, f.book_id FROM files f "
@@ -620,6 +588,8 @@ bool BookManager::deleteBook(const std::string& lpath) {
     }
 
     if (fileId != -1) {
+        // Кэширование statement здесь менее критично (удаление редкое), 
+        // но static const char* полезен
         static const char* sql1 = "DELETE FROM files WHERE id = ?";
         if (sqlite3_prepare_v2(db, sql1, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int(stmt, 1, fileId);
@@ -640,13 +610,7 @@ bool BookManager::deleteBook(const std::string& lpath) {
         }
     }
 
-    rc = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_MSG("Failed to commit delete transaction: %s", sqlite3_errmsg(db));
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-        closeDB(db);
-        return false;
-    }
+    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
     
     closeDB(db);
     return true;
