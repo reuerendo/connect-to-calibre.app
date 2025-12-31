@@ -1021,14 +1021,12 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     json_object* lengthObj = NULL;
     json_object* onCardObj = NULL;
     
-    // Validate required fields
     if (!json_object_object_get_ex(args, "lpath", &lpathObj) ||
         !json_object_object_get_ex(args, "length", &lengthObj) ||
         !json_object_object_get_ex(args, "metadata", &metadataObj)) {
         return sendErrorResponse("Missing required fields");
     }
     
-    // Handle storage selection (SD card vs internal)
     currentOnCard = "";
     if (json_object_object_get_ex(args, "on_card", &onCardObj)) {
         const char* card = json_object_get_string(onCardObj);
@@ -1048,7 +1046,6 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
         bookManager->setTargetStorage("main");
     }
     
-    // Extract book information
     currentBookLpath = json_object_get_string(lpathObj);
     currentBookLength = json_object_get_int64(lengthObj);
     currentBookReceived = 0;
@@ -1057,12 +1054,10 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
             currentBookLpath.c_str(), currentBookLength,
             bookManager->getCurrentStorage().c_str());
     
-    // Parse metadata from Calibre
     BookMetadata metadata = jsonToMetadata(metadataObj);
     metadata.lpath = currentBookLpath;
     metadata.size = currentBookLength;
     
-    // Prepare file path and create directory structure
     std::string filePath = bookManager->getBookFilePath(currentBookLpath);
     logProto(LOG_DEBUG, "Target path: %s", filePath.c_str());
     
@@ -1075,14 +1070,12 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
         }
     }
     
-    // Open file for writing
     currentBookFile = iv_fopen(filePath.c_str(), "wb");
     if (!currentBookFile) {
         logProto(LOG_ERROR, "Failed to open file for writing!");
         return sendErrorResponse("Failed to create book file");
     }
     
-    // Send acknowledgment to Calibre
     json_object* response = json_object_new_object();
     json_object_object_add(response, "lpath", json_object_new_string(currentBookLpath.c_str()));
     
@@ -1097,8 +1090,8 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     }
     freeJSON(response);
     
-    // Receive book file data in chunks
     std::vector<char> buffer(BASE_PACKET_LEN);
+    
     logProto(LOG_DEBUG, "Starting binary transfer...");
     
     while (currentBookReceived < currentBookLength) {
@@ -1127,33 +1120,21 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
         currentBookReceived += toRead;
     }
     
-    // File transfer complete - close file
     logProto(LOG_INFO, "Transfer complete.");
     iv_fclose(currentBookFile);
     currentBookFile = nullptr;
     
-    // CRITICAL CHANGE: Notify system scanner BEFORE adding to DB
-    // This allows PocketBook's indexer to create initial DB entry first
-    logProto(LOG_INFO, "Notifying system scanner about new book...");
-    BookReady(filePath.c_str());
-    
-    // Wait for system scanner to process the file and create DB entry
-    // This ensures the book entry exists in system DB before we update it
-    logProto(LOG_DEBUG, "Waiting for system scanner to process file...");
-    usleep(500000); // 500ms delay
-    
-    // Now update/enhance the book record with Calibre metadata
-    // This will find the existing system entry and add our metadata to it
-    logProto(LOG_INFO, "Updating book with Calibre metadata...");
     bookManager->addBook(metadata);
     
-    // Update cache for faster future syncs
     if (cacheManager) {
         cacheManager->updateCache(metadata);
     }
     
+    // generateCoverCache(filePath);
+	BookReady(filePath.c_str());
+    
     booksReceivedInSession++;
-    logProto(LOG_INFO, "Book successfully processed and synchronized.");
+    logProto(LOG_INFO, "Book added to DB and cache.");
     
     return true;
 }

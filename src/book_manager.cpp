@@ -14,25 +14,20 @@
 
 // --- Cache & Helpers ---
 
-// Кэш для папок и профиля, чтобы не дергать БД на каждой книге
 static int g_cachedProfileId = -1;
 static std::unordered_map<std::string, int> g_folderCache;
 
-// Сброс кэша (можно вызывать при initialize, если нужно)
 static void resetInternalCache() {
     g_cachedProfileId = -1;
     g_folderCache.clear();
 }
 
-// Быстрый парсинг ISO даты без оверхеда sscanf/strptime
-// Формат: YYYY-MM-DDTHH:MM:SS...
 static time_t fastParseIsoTime(const std::string& isoTime) {
     if (isoTime.size() < 19) return 0;
     
     const char* s = isoTime.c_str();
     
     struct tm tm = {0};
-    // Простой парсинг atoi-style для фиксированных позиций
     auto parseInt = [](const char* p, int len) {
         int val = 0;
         for(int i=0; i<len; ++i) val = val*10 + (p[i] - '0');
@@ -109,7 +104,6 @@ bool BookManager::initialize(const std::string& dbPath) {
 
 sqlite3* BookManager::openDB() {
     sqlite3* db;
-    // Используем SQLITE_OPEN_READWRITE без CREATE, системная БД должна существовать
     int rc = sqlite3_open_v2(SYSTEM_DB_PATH.c_str(), &db, SQLITE_OPEN_READWRITE, NULL);
     if (rc != SQLITE_OK) {
         LOG_MSG("Failed to open DB: %s", sqlite3_errmsg(db));
@@ -518,7 +512,6 @@ bool BookManager::updateBookSync(const BookMetadata& metadata) {
     sqlite3* db = openDB();
     if (!db) return false;
 
-    // Пытаемся найти ID без транзакции для скорости
     int bookId = findBookIdByPath(db, metadata.lpath);
     
     if (bookId == -1) {
@@ -533,7 +526,7 @@ bool BookManager::updateBookSync(const BookMetadata& metadata) {
     bool res = processBookSettings(db, bookId, metadata, profileId);
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-    // PRAGMA wal_checkpoint(FULL) тоже тяжелая операция, лучше доверить SQLite
+	sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
     
     closeDB(db);
     return res;
@@ -588,8 +581,6 @@ bool BookManager::deleteBook(const std::string& lpath) {
     }
 
     if (fileId != -1) {
-        // Кэширование statement здесь менее критично (удаление редкое), 
-        // но static const char* полезен
         static const char* sql1 = "DELETE FROM files WHERE id = ?";
         if (sqlite3_prepare_v2(db, sql1, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int(stmt, 1, fileId);
@@ -611,6 +602,7 @@ bool BookManager::deleteBook(const std::string& lpath) {
     }
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+	sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
     
     closeDB(db);
     return true;
@@ -658,7 +650,6 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
             if (filename && folder) {
                 std::string fullPath = std::string(folder) + "/" + filename;
                 if (fullPath.compare(0, booksDir.length(), booksDir) == 0) {
-                     // Оптимизированный substr
                     meta.lpath = fullPath.substr(booksDir.length());
                     if (!meta.lpath.empty() && meta.lpath[0] == '/') {
                         meta.lpath.erase(0, 1);
