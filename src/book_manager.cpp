@@ -528,6 +528,7 @@ bool BookManager::updateBookSync(const BookMetadata& metadata) {
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
 	sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
+	sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
     
     closeDB(db);
     return res;
@@ -604,6 +605,7 @@ bool BookManager::deleteBook(const std::string& lpath) {
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
 	sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
+	sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
     
     closeDB(db);
     return true;
