@@ -368,13 +368,16 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     size_t lastDot = fileName.find_last_of('.');
     if (lastDot != std::string::npos) fileExt = fileName.substr(lastDot + 1);
 
-    long long fileSize = metadata.size;
-    time_t fileMtime = fastParseIsoTime(metadata.lastModified);
-    if (fileMtime == 0) fileMtime = time(NULL); // Fallback
-
-    // Get file access time (last opened)
-    time_t fileAtime = getFileAccessTime(fullPath);
-    if (fileAtime == 0) fileAtime = fileMtime; // Fallback to modification time
+    // Get REAL file attributes instead of metadata
+    struct stat fileStat;
+    if (stat(fullPath.c_str(), &fileStat) != 0) {
+        LOG_MSG("Error: Failed to get file attributes for %s", fullPath.c_str());
+        return false;
+    }
+    
+    long long fileSize = fileStat.st_size;
+    time_t fileMtime = fileStat.st_mtime;
+    time_t fileAtime = fileStat.st_atime;
 
     sqlite3* db = openDB();
     if (!db) return false;
@@ -416,6 +419,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     std::string firstTitleLetter = getFirstLetter(metadata.title);
 
     if (fileId != -1) {
+        // Update file with REAL attributes
         static const char* updateFileSql = "UPDATE files SET size = ?, modification_time = ? WHERE id = ?";
         if (sqlite3_prepare_v2(db, updateFileSql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(stmt, 1, fileSize);
@@ -425,10 +429,11 @@ bool BookManager::addBook(const BookMetadata& metadata) {
             sqlite3_finalize(stmt);
         }
 
+        // Update book WITHOUT creationtime field
         static const char* updateBookSql = 
             "UPDATE books_impl SET title=?, first_title_letter=?, author=?, firstauthor=?, "
             "first_author_letter=?, series=?, numinseries=?, size=?, isbn=?, sort_title=?, "
-            "updated=?, ts_added=?, creationtime=? WHERE id=?";
+            "updated=?, ts_added=? WHERE id=?";
             
         if (sqlite3_prepare_v2(db, updateBookSql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, metadata.title.c_str(), -1, SQLITE_STATIC);
@@ -443,13 +448,14 @@ bool BookManager::addBook(const BookMetadata& metadata) {
             sqlite3_bind_text(stmt, 10, metadata.title.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_int64(stmt, 11, now);
             sqlite3_bind_int64(stmt, 12, currentBatchTimestamp);
-            sqlite3_bind_int64(stmt, 13, (long long)fileAtime);
-            sqlite3_bind_int(stmt, 14, bookId);
+            sqlite3_bind_int(stmt, 13, bookId);
             
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
+        
     } else {
+        // Create new book
         static const char* insertBookSql = 
             "INSERT INTO books_impl (title, first_title_letter, author, firstauthor, "
             "first_author_letter, series, numinseries, size, isbn, sort_title, creationtime, "
@@ -478,6 +484,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
         }
 
         if (bookId != -1) {
+            // Create file record with REAL attributes
             static const char* insertFileSql = 
                 "INSERT INTO files (storageid, folder_id, book_id, filename, size, modification_time, ext) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)";
@@ -502,8 +509,8 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     }
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-	sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
-	sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
+    sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
     
     closeDB(db);
     return true;
