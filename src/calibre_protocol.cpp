@@ -131,7 +131,7 @@ CalibreProtocol::CalibreProtocol(NetworkManager* net, BookManager* bookMgr,
         deviceName = "PocketBook Device";
     }
     
-    appVersion = "1.0.1";
+    appVersion = "1.1.1";
     
     logProto(LOG_INFO, "Device name: %s", deviceName.c_str());
 }
@@ -1436,3 +1436,4 @@ json_object* CalibreProtocol::cachedMetadataToJson(const BookMetadata& metadata,
     return obj;
 
 }
+
