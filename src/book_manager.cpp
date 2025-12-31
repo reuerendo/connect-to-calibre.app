@@ -509,8 +509,8 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     }
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
-    sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
+    // sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
+    // sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
     
     closeDB(db);
     return true;
@@ -534,8 +534,8 @@ bool BookManager::updateBookSync(const BookMetadata& metadata) {
     bool res = processBookSettings(db, bookId, metadata, profileId);
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-	sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
-	sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
+	// sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
+	// sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
     
     closeDB(db);
     return res;
@@ -611,8 +611,8 @@ bool BookManager::deleteBook(const std::string& lpath) {
     }
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-	sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
-	sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
+	// sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
+	// sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
     
     closeDB(db);
     return true;

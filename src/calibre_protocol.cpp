@@ -1131,7 +1131,7 @@ bool CalibreProtocol::handleSendBook(json_object* args) {
     }
     
     // generateCoverCache(filePath);
-	// BookReady(filePath.c_str());
+	BookReady(filePath.c_str());
     
     booksReceivedInSession++;
     logProto(LOG_INFO, "Book added to DB and cache.");
@@ -1166,7 +1166,7 @@ bool CalibreProtocol::handleSendBookMetadata(json_object* args) {
             cacheManager->updateCache(metadata);
         }
 
-		// NotifyConfigChanged();
+		NotifyConfigChanged();
         
     } else {
         logProto(LOG_ERROR, "Warning: Attempted to sync metadata for non-existent book");
