@@ -136,7 +136,10 @@ int BookManager::getStorageId(const std::string& filename, sqlite3* db) {
         }
         if (db) {
             sqlite3_stmt* stmt = nullptr;
-            const char* sql = "SELECT id FROM storages WHERE type = 1 OR name = 'InternalStorage' LIMIT 1";
+            // Prioritize name = 'InternalStorage' and ensure it is not a cloud sync account
+            const char* sql = "SELECT id FROM storages WHERE name = 'InternalStorage' "
+                              "OR (sync_account_id IS NULL AND (name LIKE '%Internal%' OR type = 1)) "
+                              "ORDER BY (CASE WHEN name = 'InternalStorage' THEN 0 ELSE 1 END) LIMIT 1";
             if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
                 if (sqlite3_step(stmt) == SQLITE_ROW) {
                     g_cachedInternalStorageId = sqlite3_column_int(stmt, 0);
@@ -155,7 +158,9 @@ int BookManager::getStorageId(const std::string& filename, sqlite3* db) {
         }
         if (db) {
             sqlite3_stmt* stmt = nullptr;
-            const char* sql = "SELECT id FROM storages WHERE type = 2 OR name LIKE '%SD%' LIMIT 1";
+            // Match SD Card storage and ensure it is not a cloud sync account
+            const char* sql = "SELECT id FROM storages WHERE sync_account_id IS NULL "
+                              "AND (name = 'SDCard' OR name LIKE '%SD%' OR name LIKE '%External%') LIMIT 1";
             if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
                 if (sqlite3_step(stmt) == SQLITE_ROW) {
                     g_cachedSDStorageId = sqlite3_column_int(stmt, 0);
@@ -661,6 +666,7 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
     if (!db) return books;
 
     int profileId = getCurrentProfileId(db);
+    int currentStorageId = getStorageId(booksDir, db);
     
     static const char* sql = 
 		"SELECT b.id, b.title, b.author, b.series, b.numinseries, b.size, f.modification_time, "
@@ -668,11 +674,14 @@ std::vector<BookMetadata> BookManager::getAllBooks() {
 		"FROM books_impl b "
 		"JOIN files f ON b.id = f.book_id "
 		"JOIN folders fo ON f.folder_id = fo.id "
-		"LEFT JOIN books_settings bs ON b.id = bs.bookid AND bs.profileid = ?";
+		"LEFT JOIN books_settings bs ON b.id = bs.bookid AND bs.profileid = ? "
+		"WHERE f.storageid = ? "
+		"GROUP BY b.id";
 
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_int(stmt, 1, profileId);
+        sqlite3_bind_int(stmt, 2, currentStorageId);
         
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             BookMetadata meta;
