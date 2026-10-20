@@ -18,6 +18,8 @@
 #include <memory>
 #include <atomic>
 #include <string>
+#include <system_error>
+#include <exception>
 
 // Custom events
 #define EVT_USER_UPDATE 20001
@@ -352,7 +354,7 @@ void startCalibreConnection() {
     
     try {
         connectionThread = std::thread(connectionThreadFunc, config);
-    } catch (const std::system_error& e) {
+    } catch (const std::exception& e) {
         logMsg("Failed to create thread: %s", e.what());
         isConnecting = false;
     }

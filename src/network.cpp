@@ -9,6 +9,7 @@
 #include <cstdarg>
 #include <vector>
 #include <algorithm>
+#include <new>
 
 // Use the thread-safe logger from main.cpp
 extern void logMsg(const char* format, ...);
