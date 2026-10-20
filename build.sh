@@ -39,12 +39,8 @@ if [ ! -d "${SDK_DIR}/SDK-B288" ] && [ ! -d "SDK/SDK_6.3.0/SDK-B288" ]; then
     # Clean up archive
     rm "${SDK_ARCHIVE}"
     
-    if [ ! -d "SDK_6.10/SDK-B288" ] && [ -d "SDK_6.10/usr" ]; then
-        mkdir -p SDK_6.10_tmp
-        mv SDK_6.10 SDK_6.10_tmp/SDK-B288
-        mkdir -p SDK_6.10
-        mv SDK_6.10_tmp/SDK-B288 SDK_6.10/
-        rm -rf SDK_6.10_tmp
+    if [ -d "SDK_6.10/SDK-B288-6.10" ] && [ ! -d "SDK_6.10/SDK-B288" ]; then
+        ln -sf SDK-B288-6.10 SDK_6.10/SDK-B288
     fi
     
     cd ..

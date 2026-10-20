@@ -30,15 +30,28 @@ jobs:
         mkdir -p SDK_6.10
         bsdtar -xf SDK-B288-6.10.7z -C SDK_6.10
         rm SDK-B288-6.10.7z
-        if [ ! -d "SDK_6.10/SDK-B288" ] && [ -d "SDK_6.10/usr" ]; then
-          mkdir -p SDK_6.10_tmp
-          mv SDK_6.10 SDK_6.10_tmp/SDK-B288
-          mkdir -p SDK_6.10
-          mv SDK_6.10_tmp/SDK-B288 SDK_6.10/
-          rm -rf SDK_6.10_tmp
+        
+        # Link SDK-B288 to SDK-B288-6.10 if present
+        if [ -d "SDK_6.10/SDK-B288-6.10" ]; then
+          ln -sf SDK-B288-6.10 SDK_6.10/SDK-B288
         fi
-        echo "SDK directory content:"
-        ls -la SDK_6.10/SDK-B288/usr/bin/arm-obreey-linux-gnueabi-gcc || ls -la SDK_6.10
+        
+        echo "=== Contents of SDK/SDK_6.10 ==="
+        ls -la SDK_6.10
+        
+        # Locate compiler binary and export TOOLCHAIN_PATH
+        GCC_PATH=$(find SDK_6.10 -name "arm-obreey-linux-gnueabi-gcc" | head -n 1)
+        if [ -n "$GCC_PATH" ]; then
+          echo "Found gcc at: $GCC_PATH"
+          chmod +x "$GCC_PATH" || true
+          TOOLCHAIN_DIR=$(dirname $(dirname $(dirname $(realpath "$GCC_PATH"))))
+          echo "Discovered toolchain root: $TOOLCHAIN_DIR"
+          echo "TOOLCHAIN_PATH=$TOOLCHAIN_DIR" >> $GITHUB_ENV
+        else
+          echo "ERROR: arm-obreey-linux-gnueabi-gcc not found in SDK_6.10!"
+          find SDK_6.10 -maxdepth 4
+          exit 1
+        fi
     
     - name: Setup SDK environment
       run: |
@@ -57,7 +70,7 @@ jobs:
     - name: Configure CMake
       run: |
         cd build
-        cmake .. -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DTOOLCHAIN_PATH="${GITHUB_WORKSPACE}/SDK/SDK_6.10/SDK-B288"
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DTOOLCHAIN_PATH="${TOOLCHAIN_PATH}"
     
     - name: Build
       run: |
