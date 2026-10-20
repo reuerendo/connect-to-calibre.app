@@ -2,6 +2,7 @@
 build/
 bin/
 obj/
+drafts/
 
 # SDK directory (should be downloaded separately)
 SDK/

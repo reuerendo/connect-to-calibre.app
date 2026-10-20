@@ -51,11 +51,14 @@ public:
     // Clear all cache
     void clearCache();
     
+    // Check if cache has unsaved modifications
+    bool isCacheDirty() const { return isDirty; }
+    
 private:
     std::string deviceUuid;
     std::string cacheFilePath;
+    bool isDirty;
     
-    // Оптимизация: unordered_map для доступа O(1)
     // Key: lpath (file path relative to root), Value: CacheEntry
     std::unordered_map<std::string, CacheEntry> cacheData; 
     

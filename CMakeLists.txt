@@ -9,7 +9,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_compile_options(-finput-charset=UTF-8 -fexec-charset=UTF-8)
 
 # PocketBook SDK path
-set(TOOLCHAIN_PATH "${CMAKE_SOURCE_DIR}/SDK/SDK_6.3.0/SDK-B288" CACHE PATH "Path to PocketBook SDK")
+if(NOT DEFINED TOOLCHAIN_PATH)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/SDK/SDK_6.10/SDK-B288")
+        set(TOOLCHAIN_PATH "${CMAKE_SOURCE_DIR}/SDK/SDK_6.10/SDK-B288" CACHE PATH "Path to PocketBook SDK")
+    else()
+        set(TOOLCHAIN_PATH "${CMAKE_SOURCE_DIR}/SDK/SDK_6.3.0/SDK-B288" CACHE PATH "Path to PocketBook SDK")
+    endif()
+endif()
 
 # Set the toolchain for cross-compilation
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
@@ -42,8 +48,8 @@ set(SOURCES
 # Create executable
 add_executable(${PROJECT_NAME} ${SOURCES})
 
-# Force static linking for standard libraries
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++")
+# Force static linking for standard libraries and enforce non-executable stack
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++ -Wl,-z,noexecstack")
 
 # Link libraries
 # inkview must be dynamic (PocketBook system library)

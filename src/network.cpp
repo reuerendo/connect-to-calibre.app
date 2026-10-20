@@ -276,6 +276,8 @@ bool NetworkManager::connectToServer(const std::string& host, int port) {
 
 void NetworkManager::disconnect() {
     if (socketFd >= 0) {
+        // Shutdown transmission and reception to unblock any thread waiting in recv()
+        shutdown(socketFd, SHUT_RDWR);
         close(socketFd);
         socketFd = -1;
     }
@@ -305,8 +307,15 @@ bool NetworkManager::receiveAll(void* buffer, size_t length) {
     while (remaining > 0) {
         ssize_t received = recv(socketFd, ptr, remaining, 0);
         if (received <= 0) {
-            if (errno == EINTR) continue;
-            logMsg("Receive failed: %s", strerror(errno));
+            if (received < 0 && errno == EINTR) continue;
+            if (received == 0) {
+                // Orderly connection shutdown by remote peer
+                return false;
+            }
+            // Only log as receive failure if socket is still open
+            if (socketFd >= 0) {
+                logMsg("Receive failed: %s", strerror(errno));
+            }
             return false;
         }
         ptr += received;

@@ -10,13 +10,13 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-SDK_VERSION="6.8"
-SDK_DIR="SDK/SDK_6.3.0"
-SDK_ARCHIVE="SDK-B288-6.8.7z"
-SDK_URL="https://github.com/pocketbook/SDK_6.3.0/releases/download/6.8/${SDK_ARCHIVE}"
+SDK_VERSION="6.10"
+SDK_DIR="SDK/SDK_6.10"
+SDK_ARCHIVE="SDK-B288-6.10.7z"
+SDK_URL="https://github.com/Sean-on-Git/PocketBook-SDK/releases/download/6.10/${SDK_ARCHIVE}"
 
 # Check if SDK exists
-if [ ! -d "${SDK_DIR}/SDK-B288" ]; then
+if [ ! -d "${SDK_DIR}/SDK-B288" ] && [ ! -d "SDK/SDK_6.3.0/SDK-B288" ]; then
     echo -e "${YELLOW}PocketBook SDK ${SDK_VERSION} not found. Downloading...${NC}"
     mkdir -p SDK
     cd SDK
@@ -33,8 +33,8 @@ if [ ! -d "${SDK_DIR}/SDK-B288" ]; then
         exit 1
     fi
     
-    mkdir -p SDK_6.3.0
-    bsdtar -xf "${SDK_ARCHIVE}" -C SDK_6.3.0
+    mkdir -p SDK_6.10
+    bsdtar -xf "${SDK_ARCHIVE}" -C SDK_6.10
     
     # Clean up archive
     rm "${SDK_ARCHIVE}"
@@ -69,7 +69,16 @@ file connect-to-calibre.app
 # Check dependencies
 echo ""
 echo -e "${YELLOW}Checking dynamic dependencies:${NC}"
-${CMAKE_SOURCE_DIR}/../SDK/SDK_6.3.0/SDK-B288/usr/bin/arm-obreey-linux-gnueabi-readelf -d connect-to-calibre.app | grep NEEDED || echo -e "${GREEN}No dynamic dependencies found (fully static)${NC}"
+READELF_BIN=""
+if [ -f "../SDK/SDK_6.10/SDK-B288/usr/bin/arm-obreey-linux-gnueabi-readelf" ]; then
+    READELF_BIN="../SDK/SDK_6.10/SDK-B288/usr/bin/arm-obreey-linux-gnueabi-readelf"
+elif [ -f "../SDK/SDK_6.3.0/SDK-B288/usr/bin/arm-obreey-linux-gnueabi-readelf" ]; then
+    READELF_BIN="../SDK/SDK_6.3.0/SDK-B288/usr/bin/arm-obreey-linux-gnueabi-readelf"
+fi
+
+if [ -n "${READELF_BIN}" ]; then
+    ${READELF_BIN} -d connect-to-calibre.app | grep NEEDED || echo -e "${GREEN}No dynamic dependencies found (fully static)${NC}"
+fi
 
 echo ""
 echo -e "${GREEN}Build complete!${NC}"

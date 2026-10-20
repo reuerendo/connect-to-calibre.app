@@ -15,10 +15,14 @@
 // --- Cache & Helpers ---
 
 static int g_cachedProfileId = -1;
+static int g_cachedInternalStorageId = -1;
+static int g_cachedSDStorageId = -1;
 static std::unordered_map<std::string, int> g_folderCache;
 
 static void resetInternalCache() {
     g_cachedProfileId = -1;
+    g_cachedInternalStorageId = -1;
+    g_cachedSDStorageId = -1;
     g_folderCache.clear();
 }
 
@@ -123,14 +127,48 @@ void BookManager::closeDB(sqlite3* db) {
     if (db) sqlite3_close(db);
 }
 
-int BookManager::getStorageId(const std::string& filename) {
-    if (filename.compare(0, strlen(FLASHDIR), FLASHDIR) == 0) {
-        return 1; // Internal storage
+int BookManager::getStorageId(const std::string& filename, sqlite3* db) {
+    bool isSD = (filename.compare(0, strlen(SDCARDDIR), SDCARDDIR) == 0) || (targetStorage == "carda");
+
+    if (!isSD) {
+        if (g_cachedInternalStorageId != -1) {
+            return g_cachedInternalStorageId;
+        }
+        if (db) {
+            sqlite3_stmt* stmt = nullptr;
+            const char* sql = "SELECT id FROM storages WHERE type = 1 OR name = 'InternalStorage' LIMIT 1";
+            if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                if (sqlite3_step(stmt) == SQLITE_ROW) {
+                    g_cachedInternalStorageId = sqlite3_column_int(stmt, 0);
+                    LOG_MSG("Resolved internal storageId: %d", g_cachedInternalStorageId);
+                }
+                sqlite3_finalize(stmt);
+            }
+        }
+        if (g_cachedInternalStorageId == -1) {
+            g_cachedInternalStorageId = 1; // Default fallback
+        }
+        return g_cachedInternalStorageId;
+    } else {
+        if (g_cachedSDStorageId != -1) {
+            return g_cachedSDStorageId;
+        }
+        if (db) {
+            sqlite3_stmt* stmt = nullptr;
+            const char* sql = "SELECT id FROM storages WHERE type = 2 OR name LIKE '%SD%' LIMIT 1";
+            if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                if (sqlite3_step(stmt) == SQLITE_ROW) {
+                    g_cachedSDStorageId = sqlite3_column_int(stmt, 0);
+                    LOG_MSG("Resolved SD storageId: %d", g_cachedSDStorageId);
+                }
+                sqlite3_finalize(stmt);
+            }
+        }
+        if (g_cachedSDStorageId == -1) {
+            g_cachedSDStorageId = 2; // Default fallback
+        }
+        return g_cachedSDStorageId;
     }
-    if (filename.compare(0, strlen(SDCARDDIR), SDCARDDIR) == 0) {
-        return 2; // SD Card
-    }
-    return (targetStorage == "carda") ? 2 : 1;
 }
 
 std::string BookManager::getFirstLetter(const std::string& str) {
@@ -382,7 +420,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     sqlite3* db = openDB();
     if (!db) return false;
 
-    int storageId = getStorageId(fullPath);
+    int storageId = getStorageId(fullPath, db);
     time_t now = time(NULL);
     
     if (currentBatchTimestamp == 0) {
@@ -509,8 +547,7 @@ bool BookManager::addBook(const BookMetadata& metadata) {
     }
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-    // sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
-    // sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA wal_checkpoint(PASSIVE)", NULL, NULL, NULL);
     
     closeDB(db);
     return true;
@@ -534,8 +571,7 @@ bool BookManager::updateBookSync(const BookMetadata& metadata) {
     bool res = processBookSettings(db, bookId, metadata, profileId);
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-	// sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
-	// sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA wal_checkpoint(PASSIVE)", NULL, NULL, NULL);
     
     closeDB(db);
     return res;
@@ -564,7 +600,7 @@ bool BookManager::deleteBook(const std::string& lpath) {
         fileName = filePath.substr(lastSlash + 1);
     }
     
-    int storageId = getStorageId(filePath);
+    int storageId = getStorageId(filePath, db);
 
     sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
 
@@ -611,8 +647,7 @@ bool BookManager::deleteBook(const std::string& lpath) {
     }
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-	// sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL)", NULL, NULL, NULL);
-	// sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA wal_checkpoint(PASSIVE)", NULL, NULL, NULL);
     
     closeDB(db);
     return true;

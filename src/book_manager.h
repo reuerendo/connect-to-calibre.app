@@ -75,7 +75,7 @@ private:
 	
 	time_t currentBatchTimestamp;
     
-    int getStorageId(const std::string& filename);
+    int getStorageId(const std::string& filename, sqlite3* db = nullptr);
     int getCurrentProfileId(sqlite3* db);
     std::string getFirstLetter(const std::string& str);
     

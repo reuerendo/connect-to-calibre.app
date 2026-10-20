@@ -17,7 +17,7 @@
     } \
 }
 
-CacheManager::CacheManager() {
+CacheManager::CacheManager() : isDirty(false) {
 }
 
 CacheManager::~CacheManager() {
@@ -153,11 +153,43 @@ bool CacheManager::loadCache() {
     
     json_object_put(root);
     
+    isDirty = false;
     LOG_CACHE("Loaded %d entries from cache", loaded);
     return true;
 }
 
+static std::string escapeJsonString(const std::string& input) {
+    std::string output;
+    output.reserve(input.length() + 16);
+    for (char c : input) {
+        switch (c) {
+            case '"':  output += "\\\""; break;
+            case '\\': output += "\\\\"; break;
+            case '\b': output += "\\b"; break;
+            case '\f': output += "\\f"; break;
+            case '\n': output += "\\n"; break;
+            case '\r': output += "\\r"; break;
+            case '\t': output += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", (unsigned char)c);
+                    output += buf;
+                } else {
+                    output += c;
+                }
+                break;
+        }
+    }
+    return output;
+}
+
 bool CacheManager::saveCache() {
+    if (!isDirty) {
+        LOG_CACHE("Cache is clean, skipping redundant save (%d entries)", (int)cacheData.size());
+        return true;
+    }
+
     LOG_CACHE("Saving cache with %d entries", (int)cacheData.size());
     
     purgeOldEntries(30);
@@ -178,35 +210,31 @@ bool CacheManager::saveCache() {
 
         const BookMetadata& meta = entry.second.metadata;
         
-        // Escape lpath for JSON key
-        std::string escapedPath = entry.first;
-        size_t pos = 0;
-        while ((pos = escapedPath.find('\\', pos)) != std::string::npos) {
-            escapedPath.replace(pos, 1, "\\\\");
-            pos += 2;
-        }
-        pos = 0;
-        while ((pos = escapedPath.find('"', pos)) != std::string::npos) {
-            escapedPath.replace(pos, 1, "\\\"");
-            pos += 2;
-        }
+        std::string escapedKey = escapeJsonString(entry.first);
+        std::string escapedUuid = escapeJsonString(meta.uuid);
+        std::string escapedTitle = escapeJsonString(meta.title);
+        std::string escapedAuthors = escapeJsonString(meta.authors);
+        std::string escapedLpath = escapeJsonString(meta.lpath);
+        std::string escapedLastModified = escapeJsonString(meta.lastModified);
+        std::string escapedLastUsed = escapeJsonString(entry.second.lastUsed);
         
-        fprintf(f, "\n  \"%s\": {", escapedPath.c_str());
+        fprintf(f, "\n  \"%s\": {", escapedKey.c_str());
         fprintf(f, "\n    \"book\": {");
-        fprintf(f, "\n      \"uuid\": \"%s\",", meta.uuid.c_str());
-        fprintf(f, "\n      \"title\": \"%s\",", meta.title.c_str());
-        fprintf(f, "\n      \"authors\": \"%s\",", meta.authors.c_str());
-        fprintf(f, "\n      \"lpath\": \"%s\",", meta.lpath.c_str());
-        fprintf(f, "\n      \"last_modified\": \"%s\",", meta.lastModified.c_str());
+        fprintf(f, "\n      \"uuid\": \"%s\",", escapedUuid.c_str());
+        fprintf(f, "\n      \"title\": \"%s\",", escapedTitle.c_str());
+        fprintf(f, "\n      \"authors\": \"%s\",", escapedAuthors.c_str());
+        fprintf(f, "\n      \"lpath\": \"%s\",", escapedLpath.c_str());
+        fprintf(f, "\n      \"last_modified\": \"%s\",", escapedLastModified.c_str());
         fprintf(f, "\n      \"_is_read_\": %s,", meta.isRead ? "true" : "false");
         
         if (!meta.lastReadDate.empty()) {
-            fprintf(f, "\n      \"_last_read_date_\": \"%s\",", meta.lastReadDate.c_str());
+            std::string escapedLastReadDate = escapeJsonString(meta.lastReadDate);
+            fprintf(f, "\n      \"_last_read_date_\": \"%s\",", escapedLastReadDate.c_str());
         }
         
         fprintf(f, "\n      \"_is_favorite_\": %s", meta.isFavorite ? "true" : "false");
         fprintf(f, "\n    },");
-        fprintf(f, "\n    \"last_used\": \"%s\"", entry.second.lastUsed.c_str());
+        fprintf(f, "\n    \"last_used\": \"%s\"", escapedLastUsed.c_str());
         fprintf(f, "\n  }");
     }
     
@@ -222,6 +250,7 @@ bool CacheManager::saveCache() {
         return false;
     }
     
+    isDirty = false;
     LOG_CACHE("Cache saved successfully (streaming write)");
     return true;
 }
@@ -266,10 +295,12 @@ void CacheManager::updateCache(const BookMetadata& metadata) {
     
     // insert_or_assign (C++17) или оператор []
     cacheData[metadata.lpath] = CacheEntry(newMeta, timestamp);
+    isDirty = true;
 }
 
 void CacheManager::removeFromCache(const std::string& lpath) {
     cacheData.erase(lpath);
+    isDirty = true;
     LOG_CACHE("Removed from cache: %s", lpath.c_str());
 }
 
@@ -282,12 +313,14 @@ void CacheManager::purgeOldEntries(int days) {
         // Оптимизация: быстрая проверка перед парсингом, если строка пустая
         if (it->second.lastUsed.empty()) {
              it = cacheData.erase(it);
+             isDirty = true;
              continue;
         }
 
         time_t lastUsed = parseTimestamp(it->second.lastUsed);
         if (lastUsed > 0 && lastUsed < threshold) {
             it = cacheData.erase(it);
+            isDirty = true;
         } else {
             ++it;
         }
@@ -296,5 +329,6 @@ void CacheManager::purgeOldEntries(int days) {
 
 void CacheManager::clearCache() {
     cacheData.clear();
+    isDirty = true;
     LOG_CACHE("Cache cleared");
 }

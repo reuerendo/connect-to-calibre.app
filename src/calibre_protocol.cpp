@@ -950,7 +950,38 @@ json_object* CalibreProtocol::metadataToJson(const BookMetadata& metadata) {
     
     json_object_object_add(obj, "uuid", json_object_new_string(metadata.uuid.c_str()));
     json_object_object_add(obj, "title", json_object_new_string(metadata.title.c_str()));
-    json_object_object_add(obj, "authors", json_object_new_string(metadata.authors.c_str()));
+    
+    // Calibre SmartDevice driver expects 'authors' as a JSON array of strings
+    json_object* authorsArray = json_object_new_array();
+    if (!metadata.authors.empty()) {
+        std::string authorsStr = metadata.authors;
+        size_t start = 0;
+        size_t sepPos;
+        while ((sepPos = authorsStr.find(" & ", start)) != std::string::npos) {
+            std::string author = authorsStr.substr(start, sepPos - start);
+            size_t first = author.find_first_not_of(" \t");
+            size_t last = author.find_last_not_of(" \t");
+            if (first != std::string::npos && last != std::string::npos) {
+                json_object_array_add(authorsArray, json_object_new_string(author.substr(first, last - first + 1).c_str()));
+            }
+            start = sepPos + 3;
+        }
+        std::string remainder = authorsStr.substr(start);
+        size_t first = remainder.find_first_not_of(" \t");
+        size_t last = remainder.find_last_not_of(" \t");
+        if (first != std::string::npos && last != std::string::npos) {
+            json_object_array_add(authorsArray, json_object_new_string(remainder.substr(first, last - first + 1).c_str()));
+        }
+    }
+    if (json_object_array_length(authorsArray) == 0) {
+        json_object_array_add(authorsArray, json_object_new_string(metadata.authors.c_str()));
+    }
+    json_object_object_add(obj, "authors", authorsArray);
+
+    if (!metadata.authorSort.empty()) {
+        json_object_object_add(obj, "author_sort", json_object_new_string(metadata.authorSort.c_str()));
+    }
+    
     json_object_object_add(obj, "lpath", json_object_new_string(metadata.lpath.c_str()));
     json_object_object_add(obj, "last_modified", json_object_new_string(metadata.lastModified.c_str()));
     json_object_object_add(obj, "size", json_object_new_int64(metadata.size));
@@ -1325,7 +1356,6 @@ bool CalibreProtocol::handleNoop(json_object* args) {
     
 	if (json_object_object_get_ex(args, "priKey", &val)) {
         int index = json_object_get_int(val);
-        // logProto(LOG_DEBUG, "Calibre requested details for book index: %d", index);
         
         if (index >= 0 && index < (int)sessionBooks.size()) {
             json_object* bookJson = metadataToJson(sessionBooks[index]);
@@ -1334,7 +1364,7 @@ bool CalibreProtocol::handleNoop(json_object* args) {
                 json_object_object_add(bookJson, "_is_read_", json_object_new_boolean(true));
             }
             
-            sendOKResponse(bookJson); // <--- ПРОБЛЕМА ЗДЕСЬ
+            sendOKResponse(bookJson);
             freeJSON(bookJson);
         } else {
             logProto(LOG_ERROR, "Error: Requested priKey %d out of bounds", index);
@@ -1342,11 +1372,6 @@ bool CalibreProtocol::handleNoop(json_object* args) {
             sendOKResponse(resp);
             freeJSON(resp);
         }
-        return true;
-    }
-    
-    if (json_object_object_get_ex(args, "count", &val)) {
-        logProto(LOG_DEBUG, "Received batch count notification, ignoring response");
         return true;
     }
     

@@ -4,7 +4,13 @@ set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR arm)
 
 # Specify the cross compiler
-set(TOOLCHAIN_PATH "${CMAKE_SOURCE_DIR}/SDK/SDK_6.3.0/SDK-B288" CACHE PATH "Path to PocketBook SDK")
+if(NOT DEFINED TOOLCHAIN_PATH)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/SDK/SDK_6.10/SDK-B288")
+        set(TOOLCHAIN_PATH "${CMAKE_SOURCE_DIR}/SDK/SDK_6.10/SDK-B288" CACHE PATH "Path to PocketBook SDK")
+    else()
+        set(TOOLCHAIN_PATH "${CMAKE_SOURCE_DIR}/SDK/SDK_6.3.0/SDK-B288" CACHE PATH "Path to PocketBook SDK")
+    endif()
+endif()
 
 set(CMAKE_C_COMPILER ${TOOLCHAIN_PATH}/usr/bin/arm-obreey-linux-gnueabi-gcc)
 set(CMAKE_CXX_COMPILER ${TOOLCHAIN_PATH}/usr/bin/arm-obreey-linux-gnueabi-g++)
@@ -28,7 +34,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -static-libgcc")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -static-libgcc -static-libstdc++")
 
 # Linker flags for static linking
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++ -Wl,--as-needed")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++ -Wl,--as-needed -Wl,-z,noexecstack")
 
 # Optional: Full static linking (uncomment if needed)
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
