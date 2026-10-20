@@ -13,7 +13,7 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         submodules: recursive
     
@@ -83,14 +83,14 @@ jobs:
         file build/connect-to-calibre.app
     
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: connect-to-calibre
         path: build/connect-to-calibre.app
         
     - name: Create release on tag
       if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       with:
         files: build/connect-to-calibre.app
       env:
