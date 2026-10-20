@@ -39,6 +39,14 @@ if [ ! -d "${SDK_DIR}/SDK-B288" ] && [ ! -d "SDK/SDK_6.3.0/SDK-B288" ]; then
     # Clean up archive
     rm "${SDK_ARCHIVE}"
     
+    if [ ! -d "SDK_6.10/SDK-B288" ] && [ -d "SDK_6.10/usr" ]; then
+        mkdir -p SDK_6.10_tmp
+        mv SDK_6.10 SDK_6.10_tmp/SDK-B288
+        mkdir -p SDK_6.10
+        mv SDK_6.10_tmp/SDK-B288 SDK_6.10/
+        rm -rf SDK_6.10_tmp
+    fi
+    
     cd ..
     echo -e "${GREEN}SDK ${SDK_VERSION} downloaded and extracted successfully.${NC}"
 fi
@@ -54,7 +62,7 @@ echo -e "${GREEN}Build directory created.${NC}"
 # Configure CMake
 echo -e "${YELLOW}Configuring CMake for static build...${NC}"
 cd build
-cmake .. -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake -DCMAKE_BUILD_TYPE=Release "$@"
+cmake .. -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DTOOLCHAIN_PATH="${PWD}/../SDK/SDK_6.10/SDK-B288" "$@"
 
 # Build
 echo -e "${YELLOW}Building with static libraries...${NC}"

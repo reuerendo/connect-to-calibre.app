@@ -30,6 +30,15 @@ jobs:
         mkdir -p SDK_6.10
         bsdtar -xf SDK-B288-6.10.7z -C SDK_6.10
         rm SDK-B288-6.10.7z
+        if [ ! -d "SDK_6.10/SDK-B288" ] && [ -d "SDK_6.10/usr" ]; then
+          mkdir -p SDK_6.10_tmp
+          mv SDK_6.10 SDK_6.10_tmp/SDK-B288
+          mkdir -p SDK_6.10
+          mv SDK_6.10_tmp/SDK-B288 SDK_6.10/
+          rm -rf SDK_6.10_tmp
+        fi
+        echo "SDK directory content:"
+        ls -la SDK_6.10/SDK-B288/usr/bin/arm-obreey-linux-gnueabi-gcc || ls -la SDK_6.10
     
     - name: Setup SDK environment
       run: |
@@ -48,7 +57,7 @@ jobs:
     - name: Configure CMake
       run: |
         cd build
-        cmake .. -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake -DCMAKE_BUILD_TYPE=Release
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DTOOLCHAIN_PATH="${GITHUB_WORKSPACE}/SDK/SDK_6.10/SDK-B288"
     
     - name: Build
       run: |
